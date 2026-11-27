@@ -93,3 +93,27 @@ little in front of the pixels.
 
 Output: `output/points_<time>.csv` (name, x, y, z, spread, frames, target, error) and
 `..._frames.csv` with every frame's tip and both raw poses.
+
+### First touch test (S23 + pencil, NexiGo, Kamvas, 2026-11-27)
+
+24 touches, 3 on each of T1-T8, 20-260 mm from the reference board:
+
+- In-plane error **1.55 mm RMS** (worst 2.31). Almost all of it is a **constant
+  +1.45 mm in x** at every target, near or far. y averages -0.25 mm.
+- Depth: mean -1.57 mm with only 0.35 mm spread. That is the cover glass the tip
+  rests on (above the pixels).
+- With a constant offset removed, the in-plane error is **0.52 mm** (each target
+  scored using an offset fitted to the other targets only). A corrected tip position
+  fitted the same way gives 0.57 mm.
+
+The two explanations for the constant offset fit equally well, because the phone's
+orientation only varied by a median of 12 degrees:
+
+1. **Tip calibration error** (the fit puts the tip ~1.1 mm further in x and ~1 mm
+   in z than the pivot did). This rotates with the probe.
+2. **Aiming parallax:** the crosshair is ~1.5 mm under the glass, so viewing it
+   from an angle shifts where the tip gets placed. This stays fixed in the screen's
+   frame.
+
+To tell them apart: touch while looking straight down at each crosshair, and with the
+phone turned well differently (sideways, tilted the other way).

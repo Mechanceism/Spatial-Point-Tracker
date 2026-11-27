@@ -64,13 +64,15 @@ class PointMeasurer:
         self.tgt = BoardDetector(tgt_spec)
         self.ref_xyz = ref_spec.corner_xyz(ref_corner)
         self.tgt_xyz = tgt_spec.corner_xyz(tgt_corner)
+        self.last_detections = (None, None)  # (reference, target) from the last measure()
 
     def measure(self, name: str, gray: np.ndarray) -> tuple[ViewResult | None, str]:
         """Result for one photo, or None and the reason it was skipped."""
-        ref = estimate_pose(self.ref, self.ref.detect(gray), self.calib)
+        self.last_detections = (self.ref.detect(gray), self.tgt.detect(gray))
+        ref = estimate_pose(self.ref, self.last_detections[0], self.calib)
         if ref is None:
             return None, "reference board not found"
-        tgt = estimate_pose(self.tgt, self.tgt.detect(gray), self.calib)
+        tgt = estimate_pose(self.tgt, self.last_detections[1], self.calib)
         if tgt is None:
             return None, "target board not found"
         # A board that does not fit its own pose well (bad calibration near the frame

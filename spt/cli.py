@@ -18,6 +18,7 @@ from .cameras import FpsMeter, LiveCamera, find_camera, list_cameras, sharpness
 from .detect import BoardDetector, draw_detection, image_size, list_images, load_gray, most_common_size
 from .display import LAYOUTS, Scene, list_monitors, make_scene, pitch_from_diagonal, show
 from .guided import GuideConfig, GuidedCalibrator
+from .live_measure import LiveMeasureSession
 from .measure import PointMeasurer, Summary, summarize
 from .pdf import write_pdf
 from .printable import PAPER_MM, board_page
@@ -345,6 +346,143 @@ def cmd_calibrate_live(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_measure_live(args: argparse.Namespace) -> int:
+    calib = CameraCalibration.load(args.calib)
+    scene = Scene.load(args.scene)
+    ref_b, tgt_b = scene.board("reference"), scene.board("target")
+    if ref_b is None or tgt_b is None:
+        raise SystemExit("the scene must show both boards (show --layout measure)")
+    query = args.camera or calib.camera.get("name")
+    if not query:
+        raise SystemExit("give --camera (the calibration file doesn't name one)")
+    cam_info = find_camera(query, list_cameras(with_modes=True, include_virtual=True))
+    width, height = calib.image_size
+    mode = cam_info.best_mode()
+    measurer = PointMeasurer(calib, ref_b.spec, tgt_b.spec, max_rms_px=args.max_rms)
+    session = LiveMeasureSession(measurer, scene.truth(), frames_per_capture=args.frames)
+    safe = "".join(ch if ch.isalnum() else "_" for ch in cam_info.name).strip("_").lower()
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    frames_dir = Path(f"captures/measure_live/{safe}_{stamp}")
+    csv_path = Path(args.csv or f"output/measure_live_{safe}_{stamp}.csv")
+
+    live = LiveCamera(cam_info.index, width, height, args.fps or (mode.fps if mode else None), args.fourcc).start()
+    first = live.read(timeout=8.0)
+    if (first.image.shape[1], first.image.shape[0]) != tuple(calib.image_size):
+        live.stop()
+        raise SystemExit(f"camera gives {first.image.shape[1]}x{first.image.shape[0]}, calibration is for "
+                         f"{calib.image_size[0]}x{calib.image_size[1]}")
+    window = f"Live measurement - {cam_info.name}"
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    if args.monitor:
+        mon = {m.index: m for m in list_monitors()}.get(args.monitor)
+        if mon:
+            cv2.moveWindow(window, mon.x + 20, mon.y + 20)
+            cv2.resizeWindow(window, min(mon.width - 40, args.max_side), min(mon.height - 80, round(args.max_side * height / width)))
+    truth_mm = scene.known_mm()
+    print(f"{cam_info.name}: {width}x{height} {live.fourcc}. Truth: {truth_mm:.2f} mm. q finishes, Esc quits.")
+    last, message, message_until = 0, "", 0.0
+    colors = {"captured": (0, 220, 0), "collecting": (0, 220, 255), "none": (0, 0, 200), "move": (255, 160, 0)}
+    try:
+        while True:
+            frame = live.read(after=last, timeout=5.0)
+            last = frame.number
+            gray = cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY)
+            step = session.update(f"f{frame.number}", gray)
+            if step.state == "captured":
+                c = step.capture
+                err = np.linalg.norm(c.mean - session.truth)
+                frames_dir.mkdir(parents=True, exist_ok=True)
+                cv2.imwrite(str(frames_dir / f"capture{c.number:02d}.png"), frame.image)
+                message, message_until = f"capture {c.number}: error {err:.2f} mm - now move or turn the screen", time.perf_counter() + 2.5
+                _beep(1400, 70)
+
+            out = frame.image.copy()
+            r = max(3, out.shape[1] // 300)
+            for det, color in zip(measurer.last_detections, ((0, 255, 0), (255, 200, 0))):
+                if det is not None:
+                    for x, y in det.corners:
+                        cv2.circle(out, (round(x), round(y)), r, color, -1, cv2.LINE_AA)
+            if not args.no_mirror:
+                out = cv2.flip(out, 1)
+            h, w = out.shape[:2]
+            color = colors.get(step.state)
+            if color:
+                thick = max(6, w // 100)
+                cv2.rectangle(out, (0, 0), (w - 1, h - 1), color, thick)
+                if step.state == "collecting":
+                    cv2.rectangle(out, (0, h - thick * 2), (round(w * step.progress), h), color, -1)
+            scale = args.max_side / max(w, h)
+            if scale < 1:
+                out = cv2.resize(out, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+            if step.result is not None:
+                e = step.result.point - session.truth
+                line1 = (f"this frame: error x {e[0]:+.2f}  y {e[1]:+.2f}  z {e[2]:+.2f}  = {np.linalg.norm(e):.2f} mm   "
+                         f"(camera {step.result.camera_distance_mm:.0f} mm away)")
+            else:
+                line1 = f"this frame: {step.reason}"
+            st = session.stats()
+            line2 = f"captures {st['captures']}   frames {st['frames']}"
+            if "frame_rms" in st:
+                line2 += f"   frame error RMS {st['frame_rms']:.2f} mm"
+            if "capture_rms" in st:
+                line2 += (f"   capture error RMS {st['capture_rms']:.2f} mm   "
+                          f"mean of captures {np.linalg.norm(st['all_mean_error']):.2f} mm")
+            hint = message if time.perf_counter() < message_until else {
+                "none": "show both boards to the camera",
+                "moving": "hold still to capture",
+                "collecting": "hold still...",
+                "move": "move or turn the screen for the next capture",
+            }.get(step.state, "")
+            out = _with_panel(out, [line1, line2, f"> {hint}", "q finish and save   Esc quit without saving"], scale=0.8)
+            cv2.imshow(window, out)
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+                print("cancelled, nothing saved")
+                return 1
+            if key == ord("q"):
+                break
+    finally:
+        live.stop()
+        cv2.destroyAllWindows()
+
+    # Raw results: every measured frame, tagged with its capture (0 = not in one).
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(csv_path, "w", newline="") as f:
+        wr = csv.writer(f)
+        wr.writerow(["capture", "frame", "x_mm", "y_mm", "z_mm", "err_x", "err_y", "err_z", "err_3d",
+                     "camera_distance_mm", "ref_rms_px", "tgt_rms_px", "ref_corners", "tgt_corners"])
+        for cap_no, res in session.frames:
+            e = res.point - session.truth
+            wr.writerow([cap_no, res.name, *np.round(res.point, 4), *np.round(e, 4), round(float(np.linalg.norm(e)), 4),
+                         round(res.camera_distance_mm, 1), round(res.ref.rms_px, 3), round(res.tgt.rms_px, 3),
+                         res.ref.corners, res.tgt.corners])
+    _print_live_summary(session, truth_mm)
+    print(f"\nwrote {csv_path}" + (f"\nsaved capture frames to {frames_dir}" if session.captures else ""))
+    return 0
+
+
+def _print_live_summary(session: LiveMeasureSession, truth_mm: float) -> None:
+    st = session.stats()
+    print(f"\nLive measurement vs exact truth (corner distance {truth_mm:.2f} mm)")
+    print(f"  frames measured       {st['frames']}")
+    if "frame_rms" in st:
+        x, y, z = st["frame_rms_xyz"]
+        print(f"  single frame          RMS {st['frame_rms']:.2f} mm   (x {x:.2f}  y {y:.2f}  z {z:.2f})")
+    if "capture_rms" in st:
+        x, y, z = st["capture_rms_xyz"]
+        m = st["all_mean_error"]
+        print(f"  frame noise           {st['frame_noise']:.2f} mm   (spread of frames within one capture)")
+        print(f"  one capture ({session.frames_per_capture} fr)   RMS {st['capture_rms']:.2f} mm   (x {x:.2f}  y {y:.2f}  z {z:.2f}), "
+              f"worst {st['capture_worst']:.2f}")
+        print(f"  mean of {st['captures']} captures    error {np.linalg.norm(m):.2f} mm   (x {m[0]:+.2f}  y {m[1]:+.2f}  z {m[2]:+.2f})")
+        print("\n  capture   error mm   frame noise mm   camera mm")
+        for c in session.captures:
+            err = np.linalg.norm(c.mean - session.truth)
+            dist = np.mean([r.camera_distance_mm for r in c.results])
+            print(f"  {c.number:7d}   {err:8.2f}   {c.frame_spread:14.2f}   {dist:9.0f}")
+
+
 def _load_views(folder: str):
     """Yield (path, gray) for every image in the folder."""
     paths = list_images(folder)
@@ -570,6 +708,20 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--max-side", type=int, default=1800, help="display size limit (px)")
     cl.add_argument("--no-mirror", action="store_true", help="don't mirror the view (camera not facing you)")
     cl.set_defaults(func=cmd_calibrate_live)
+
+    ml = sub.add_parser("measure-live", help="live measurement test against the exact screen truth")
+    ml.add_argument("--calib", required=True, help="calibration file (its camera is used unless --camera)")
+    ml.add_argument("--scene", default="output/scene_measure.json", help="scene from 'show --layout measure'")
+    ml.add_argument("--camera", help="index or part of the name (default: from the calibration)")
+    ml.add_argument("--fps", type=float)
+    ml.add_argument("--fourcc", default="MJPG")
+    ml.add_argument("--frames", type=int, default=15, help="frames averaged per capture")
+    ml.add_argument("--max-rms", type=float, default=1.0, help="reject frames whose board fit is worse (px)")
+    ml.add_argument("--csv", help="per-frame results (default output/measure_live_<camera>_<time>.csv)")
+    ml.add_argument("--monitor", type=int, help="monitor to show the camera view on")
+    ml.add_argument("--max-side", type=int, default=1800)
+    ml.add_argument("--no-mirror", action="store_true")
+    ml.set_defaults(func=cmd_measure_live)
 
     mo = sub.add_parser("monitors", help="list monitors (for show)")
     mo.set_defaults(func=cmd_monitors)

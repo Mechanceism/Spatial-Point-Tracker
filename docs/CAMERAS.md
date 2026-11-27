@@ -58,6 +58,26 @@ only 18 (goal 20), so the "done" criteria weren't met; with fx already determine
 0.08 %, this is a minor gap. For comparison, the S23 photos had fx 2705 px over a 73
 degree view, so the S23 resolves about 1.8x finer detail per degree than the NexiGo.
 
+## Live measurement test
+
+```
+python -m spt show --monitor 3 --pitch-mm 0.153 --layout measure    # both boards on the Kamvas
+python -m spt measure-live --calib output/nexigo_n930e_fhd_webcam.calib.json --monitor 1
+```
+
+Hold the screen with both boards in front of the camera. Every frame measures the
+target corner in the reference frame against the exact truth. Holding still for 15
+frames (`--frames`) makes a **capture** (the average of those frames); then move or
+turn the screen (20 mm or 5 degrees) for the next one. `q` finishes and prints:
+
+- **single frame:** error of individual frames;
+- **frame noise:** spread of frames within one capture;
+- **one capture:** error after averaging frames from one viewpoint;
+- **mean of captures:** error after also averaging over viewpoints.
+
+Every frame is written to `output/measure_live_<camera>_<time>.csv`, and one image
+per capture goes to `captures/measure_live/`.
+
 ## How frames are read
 
 `LiveCamera` reads the camera on a background thread and keeps only the newest frame,

@@ -24,6 +24,33 @@ Keys: `q`/Esc quit, `s` save the full-resolution frame to `captures/preview/`,
 `c` open the driver's settings dialog (focus, exposure, white balance), `d` toggle
 detection.
 
+## Guided live calibration
+
+```
+python -m spt show --monitor 3 --pitch-mm 0.153 --layout calib      # board on the Kamvas
+python -m spt calibrate-live --camera nexigo --scene output/scene_calib.json --monitor 1
+```
+
+Hold the board (Kamvas, phone screen or print) in front of the camera and move it
+around. The camera view is shown mirrored like a selfie, with:
+
+- **red cells:** parts of the frame the board still has to visit;
+- **border colour:** yellow while holding still (with a progress bar along the
+  bottom), green flash and a beep on capture, red when no board is seen;
+- the status line (views, coverage, tilt range, error) and a hint for what to do next.
+
+A frame is captured when the board has been **still** for about 0.2 s, at least half
+of its corners are visible, and the view is **new**: it covers a cell not yet covered,
+or has a tilt more than 10 degrees from views already taken in that part of the frame.
+After 6 views the camera is recalibrated on every capture, and a view fitting much
+worse than the rest (blur, glare) is dropped with a low beep.
+
+It's **done** (long beep, hint says DONE) at 15 views, 80 % coverage, tilts of at
+least 20 degrees left/right and forward/back, and an error of 0.6 px or less. Press `q`
+to save. Esc quits without saving. The calibration goes to `output/<camera>.calib.json`
+and records the camera and mode. The accepted frames are saved to
+`captures/calib_live/...` so `python -m spt calibrate` can redo it offline.
+
 ## How frames are read
 
 `LiveCamera` reads the camera on a background thread and keeps only the newest frame,

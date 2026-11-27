@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from .calibration import CameraCalibration, calibrate, coverage_image
 from .cameras import FpsMeter, LiveCamera, find_camera, list_cameras, sharpness
 from .detect import BoardDetector, draw_detection, image_size, list_images, load_gray, most_common_size
 from .display import LAYOUTS, Scene, list_monitors, make_scene, pitch_from_diagonal, show
+from .guided import GuideConfig, GuidedCalibrator
 from .measure import PointMeasurer, Summary, summarize
 from .pdf import write_pdf
 from .printable import PAPER_MM, board_page
@@ -106,13 +109,24 @@ def cmd_cameras(args: argparse.Namespace) -> int:
     return 0
 
 
-def _put_lines(img: np.ndarray, lines: list[str]) -> None:
+def _put_lines(img: np.ndarray, lines: list[str], scale: float = 0.6) -> None:
     """White status text on a darkened band across the top, readable on any scene."""
-    band = img[: 14 + 26 * len(lines)]
+    step = round(43 * scale)
+    band = img[: round(23 * scale) + step * len(lines)]
     band[:] = (band * 0.35).astype(img.dtype)
     for row, text in enumerate(lines):
-        cv2.putText(img, text, (10, 28 + 26 * row), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                    (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(img, text, (10, round(47 * scale) + step * row), cv2.FONT_HERSHEY_SIMPLEX, scale,
+                    (255, 255, 255), 1 if scale < 0.8 else 2, cv2.LINE_AA)
+
+
+def _with_panel(img: np.ndarray, lines: list[str], scale: float = 0.9) -> np.ndarray:
+    """The image with a dark text panel added below it (covers nothing)."""
+    step = round(43 * scale)
+    panel = np.full((round(23 * scale) + step * len(lines), img.shape[1], 3), 30, dtype=np.uint8)
+    for row, text in enumerate(lines):
+        cv2.putText(panel, text, (12, round(40 * scale) + step * row), cv2.FONT_HERSHEY_SIMPLEX, scale,
+                    (255, 255, 255), 2 if scale >= 0.8 else 1, cv2.LINE_AA)
+    return np.vstack([img, panel])
 
 
 def cmd_preview(args: argparse.Namespace) -> int:
@@ -196,6 +210,141 @@ def cmd_preview(args: argparse.Namespace) -> int:
     return 0
 
 
+def _beep(freq: int = 1200, ms: int = 80) -> None:
+    if sys.platform == "win32":
+        import winsound
+        threading.Thread(target=winsound.Beep, args=(freq, ms), daemon=True).start()
+
+
+def _draw_guide(image: np.ndarray, guide: GuidedCalibrator, det, step, mirror: bool, max_side: int) -> np.ndarray:
+    """Camera frame with the coverage grid (red = still needed), corners and a state
+    border, mirrored like a selfie when the user faces the camera."""
+    out = image.copy()
+    h, w = out.shape[:2]
+    gx, gy = guide.cfg.grid
+    covered = guide.covered_cells
+    tint = out.copy()
+    for cx in range(gx):
+        for cy in range(gy):
+            if (cx, cy) not in covered:
+                p0 = (round(cx * w / gx), round(cy * h / gy))
+                p1 = (round((cx + 1) * w / gx), round((cy + 1) * h / gy))
+                cv2.rectangle(tint, p0, p1, (0, 0, 255), -1)
+    out = cv2.addWeighted(tint, 0.25, out, 0.75, 0)
+    for cx in range(1, gx):
+        cv2.line(out, (round(cx * w / gx), 0), (round(cx * w / gx), h), (200, 200, 200), 1)
+    for cy in range(1, gy):
+        cv2.line(out, (0, round(cy * h / gy)), (w, round(cy * h / gy)), (200, 200, 200), 1)
+    if det is not None:  # plain dots: id labels would come out mirrored
+        r = max(3, w // 300)
+        for x, y in det.corners:
+            cv2.circle(out, (round(x), round(y)), r, (0, 255, 0), -1, cv2.LINE_AA)
+    if mirror:
+        out = cv2.flip(out, 1)
+    colors = {"captured": (0, 220, 0), "holding": (0, 220, 255), "rejected": (0, 0, 255),
+              "duplicate": (255, 160, 0), "none": (0, 0, 200), "few": (0, 0, 200)}
+    color = colors.get(step.state)
+    if color:
+        thick = max(6, w // 100)
+        cv2.rectangle(out, (0, 0), (w - 1, h - 1), color, thick)
+        if step.state == "holding":  # hold-still progress bar along the bottom
+            cv2.rectangle(out, (0, h - thick * 2), (round(w * step.still), h), color, -1)
+    scale = max_side / max(w, h)
+    if scale < 1:
+        out = cv2.resize(out, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    return out
+
+
+def cmd_calibrate_live(args: argparse.Namespace) -> int:
+    cam_info = find_camera(args.camera, list_cameras(with_modes=True, include_virtual=True))
+    mode = cam_info.best_mode()
+    if args.mode:
+        width, height = (int(v) for v in args.mode.lower().split("x"))
+    else:
+        width, height = (mode.width, mode.height) if mode else (None, None)
+    square_mm = None
+    if args.scene:
+        placed = Scene.load(args.scene).board("reference")
+        square_mm = placed.spec.square_mm if placed else None
+    spec = REFERENCE.scaled(square_mm)
+    safe = "".join(ch if ch.isalnum() else "_" for ch in cam_info.name).strip("_").lower()
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    frames_dir = Path(args.frames_dir or f"captures/calib_live/{safe}_{stamp}")
+    out = Path(args.out or f"output/{safe}.calib.json")
+
+    live = LiveCamera(cam_info.index, width, height, args.fps or (mode.fps if mode else None), args.fourcc).start()
+    first = live.read(timeout=8.0)
+    size = (first.image.shape[1], first.image.shape[0])
+    cfg = GuideConfig(min_views=args.min_views, target_coverage=args.coverage, max_rms=args.max_rms)
+    guide = GuidedCalibrator(spec, size, cfg)
+    frames: list[np.ndarray] = []
+
+    window = f"Guided calibration - {cam_info.name}"
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    if args.monitor:
+        mon = {m.index: m for m in list_monitors()}.get(args.monitor)
+        if mon:
+            cv2.moveWindow(window, mon.x + 20, mon.y + 20)
+            cv2.resizeWindow(window, min(mon.width - 40, args.max_side), min(mon.height - 80, round(args.max_side * size[1] / size[0])))
+    print(f"{cam_info.name}: {size[0]}x{size[1]} {live.fourcc}. Hold the board in front of the camera; q saves and quits.")
+    message, message_until, was_done = "", 0.0, False
+    last = 0
+    try:
+        while True:
+            frame = live.read(after=last, timeout=5.0)
+            last = frame.number
+            det = guide.detector.detect(cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY))
+            step = guide.update(det, frame.time)
+            if step.state == "captured":
+                frames.append(frame.image.copy())
+                _beep(1400, 70)
+            elif step.state == "rejected":
+                _beep(400, 200)
+            if step.message and step.state in ("captured", "rejected", "duplicate"):
+                message, message_until = step.message, time.perf_counter() + 1.5
+            if guide.done() and not was_done:
+                _beep(1800, 300)
+                was_done = True
+
+            disp = _draw_guide(frame.image, guide, det, step, not args.no_mirror, args.max_side)
+            rms = "-" if guide.rms is None else f"{guide.rms:.2f} px"
+            tx, ty = guide.tilt_range
+            status = (f"views {len(guide.views)}/{cfg.min_views}   coverage {guide.coverage:.0%} (need {cfg.target_coverage:.0%})   "
+                      f"tilt L/R {tx:.0f} F/B {ty:.0f} deg (need {cfg.min_tilt_deg:.0f})   RMS {rms}")
+            now_msg = message if time.perf_counter() < message_until else (step.message or "")
+            disp = _with_panel(disp, [status, f"> {guide.hint()}", now_msg, "q save and quit   Esc quit without saving"])
+            cv2.imshow(window, disp)
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+                print("cancelled, nothing saved")
+                return 1
+            if key == ord("q"):
+                break
+    finally:
+        live.stop()
+        cv2.destroyAllWindows()
+
+    if guide.calibration is None:
+        print(f"only {len(guide.views)} views captured; need at least {cfg.calibrate_after}. Nothing saved.")
+        return 1
+    # Raw observations: the accepted frames, so the calibration can be redone offline.
+    # A view is only ever dropped in the step that captured it (and its frame is
+    # never stored), so frames and views correspond one to one.
+    assert len(frames) == len(guide.views)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    for i, image in enumerate(frames):
+        cv2.imwrite(str(frames_dir / f"view{i:02d}.png"), image)
+    n = len(frames)
+    calib = guide.calibration
+    calib.camera = {"name": cam_info.name, "width": size[0], "height": size[1], "fourcc": live.fourcc}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    calib.save(out)
+    _print_calibration(calib, spec, size, [], 0.0)
+    print(f"  done criteria   {'met' if guide.done() else 'NOT met (saved anyway)'}")
+    print(f"\nwrote {out}\nsaved {n} frames to {frames_dir} (python -m spt calibrate {frames_dir} redoes it offline)")
+    return 0
+
+
 def _load_views(folder: str):
     """Yield (path, gray) for every image in the folder."""
     paths = list_images(folder)
@@ -256,6 +405,12 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
         cv2.imwrite(str(debug / "coverage.png"),
                     coverage_image([d.corners for n, d in views if n in used], size))
 
+    _print_calibration(calib, spec, size, skipped, elapsed)
+    print(f"\nwrote {args.out}")
+    return 0
+
+
+def _print_calibration(calib: CameraCalibration, spec, size, skipped: list, elapsed: float) -> None:
     K = calib.camera_matrix
     std = calib.std_intrinsics
     print(f"\nCalibration ({spec.name} board, square {spec.square_mm:g} mm), {elapsed:.1f} s")
@@ -274,8 +429,6 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
         print("\n  WARNING: corners cover under half of the frame, so the lens distortion is")
         print("  unreliable near the edges (low RMS does not mean a good calibration).")
         print("  Retake with the board in every part of the frame, especially the corners.")
-    print(f"\nwrote {args.out}")
-    return 0
 
 
 def _rms_verdict(rms: float) -> str:
@@ -401,6 +554,22 @@ def build_parser() -> argparse.ArgumentParser:
     pv.add_argument("--seconds", type=float, help="close automatically after this long")
     pv.add_argument("--save-last", help="with --seconds: save the last displayed view here")
     pv.set_defaults(func=cmd_preview)
+
+    cl = sub.add_parser("calibrate-live", help="guided calibration: auto-captures while you move the board")
+    cl.add_argument("--camera", required=True, help="index or part of the name (see 'cameras')")
+    cl.add_argument("--mode", help="WIDTHxHEIGHT (default: largest MJPG mode at 15+ fps)")
+    cl.add_argument("--fps", type=float)
+    cl.add_argument("--fourcc", default="MJPG")
+    cl.add_argument("--scene", help="scene file from 'show --layout calib' (board square size)")
+    cl.add_argument("--out", help="calibration file (default output/<camera>.calib.json)")
+    cl.add_argument("--frames-dir", help="where accepted frames are saved (default captures/calib_live/...)")
+    cl.add_argument("--min-views", type=int, default=15)
+    cl.add_argument("--coverage", type=float, default=0.8, help="frame coverage goal (0-1)")
+    cl.add_argument("--max-rms", type=float, default=0.6, help="error goal (px)")
+    cl.add_argument("--monitor", type=int, help="monitor to show the camera view on")
+    cl.add_argument("--max-side", type=int, default=1800, help="display size limit (px)")
+    cl.add_argument("--no-mirror", action="store_true", help="don't mirror the view (camera not facing you)")
+    cl.set_defaults(func=cmd_calibrate_live)
 
     mo = sub.add_parser("monitors", help="list monitors (for show)")
     mo.set_defaults(func=cmd_monitors)

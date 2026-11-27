@@ -27,11 +27,13 @@ class CameraCalibration:
     views: list[dict] = field(default_factory=list)  # file, corners, error_px
     board: dict = field(default_factory=dict)
     coverage: float = 0.0
+    camera: dict = field(default_factory=dict)  # name, mode: which setup this is valid for
 
     def to_json(self) -> dict:
         return {
             "format": FORMAT,
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "camera": self.camera,
             "image_size": list(self.image_size),
             "camera_matrix": self.camera_matrix.tolist(),
             "dist_coeffs": self.dist_coeffs.ravel().tolist(),
@@ -55,6 +57,7 @@ class CameraCalibration:
             views=data.get("views", []),
             board=data.get("board", {}),
             coverage=data.get("coverage", 0.0),
+            camera=data.get("camera", {}),
         )
 
     def save(self, path: str | Path) -> None:

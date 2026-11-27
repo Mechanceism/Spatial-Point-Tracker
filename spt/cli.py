@@ -690,7 +690,7 @@ def cmd_digitize(args: argparse.Namespace) -> int:
     live = LiveCamera(cam_info.index, width, height, mode.fps if mode else None, "MJPG").start()
     window = f"Digitize - {cam_info.name}"
     _open_window(window, args.monitor, width, height, args.max_side)
-    print(f"{cam_info.name}: touch a point and hold still to capture it. q saves, Esc cancels.")
+    print(f"{cam_info.name}: touch a point and hold still to capture it. Points save as you go; q or Esc finishes.")
     message, message_until, last = "", 0.0, 0
     colors = {"captured": (0, 220, 0), "holding": (0, 220, 255), "none": (0, 0, 200), "move": (255, 160, 0)}
     try:
@@ -706,6 +706,7 @@ def cmd_digitize(args: argparse.Namespace) -> int:
                 message, message_until = text, time.perf_counter() + 3.0
                 print("  " + text)
                 _beep(1400, 70)
+                _save_digitized(session, points_csv, frames_csv)  # saved as you go
 
             out = frame.image.copy()
             for det, color in zip(session.last_detections, ((0, 255, 0), (255, 200, 0))):
@@ -751,18 +752,32 @@ def cmd_digitize(args: argparse.Namespace) -> int:
                 "move": "move to the next point",
             }.get(step.state, "")
             out = _with_panel(out, [line1, line2, f"> {hint}",
-                                    "red circle = tip   magenta = targets   q save   Esc cancel"], scale=0.8)
+                                    "red circle = tip   magenta = targets   points save as you go   q / Esc finish"], scale=0.8)
             cv2.imshow(window, out)
             key = cv2.waitKey(1) & 0xFF
-            if key == 27 or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
-                print("cancelled, nothing saved")
-                return 1
-            if key == ord("q"):
+            if key in (27, ord("q")) or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
                 break
     finally:
         live.stop()
         cv2.destroyAllWindows()
+        _save_digitized(session, points_csv, frames_csv)  # also on errors: never lose points
 
+    s = session.summary()
+    print(f"\nDigitized {s['points']} points (tip from pivot: residual {probe.tip.rms_mm} mm)")
+    if "xy_rms" in s:
+        print(f"  on targets        {s['matched']}")
+        print(f"  error in plane    RMS {s['xy_rms']:.2f} mm, worst {s['worst_xy']:.2f} mm")
+        print(f"  error in depth    mean {s['z_mean']:+.2f} mm (glass above the pixels + bias), sd {s['z_std']:.2f} mm")
+        print(f"  3D RMS            {s['rms_3d']:.2f} mm ({s['rms_3d_offset_removed']:.2f} mm with the mean depth offset removed)")
+        print("\n  point   err x   err y   err z   spread")
+        for p in session.points:
+            if p.error is not None:
+                print(f"  {p.name:5}  {p.error[0]:+6.2f}  {p.error[1]:+6.2f}  {p.error[2]:+6.2f}   {p.spread:5.2f}")
+    print(f"\nwrote {points_csv} and {frames_csv}")
+    return 0
+
+
+def _save_digitized(session: DigitizeSession, points_csv: Path, frames_csv: Path) -> None:
     points_csv.parent.mkdir(parents=True, exist_ok=True)
     with open(points_csv, "w", newline="") as f:
         wr = csv.writer(f)
@@ -778,20 +793,6 @@ def cmd_digitize(args: argparse.Namespace) -> int:
                      "probe_rx", "probe_ry", "probe_rz", "probe_tx", "probe_ty", "probe_tz", "probe_rms_px", "probe_corners"])
         for n, smp in session.samples:
             wr.writerow([n, smp.frame, *np.round(smp.tip, 4), *_pose_row(smp.ref), *_pose_row(smp.probe)])
-
-    s = session.summary()
-    print(f"\nDigitized {s['points']} points (tip from pivot: residual {probe.tip.rms_mm} mm)")
-    if "xy_rms" in s:
-        print(f"  on targets        {s['matched']}")
-        print(f"  error in plane    RMS {s['xy_rms']:.2f} mm, worst {s['worst_xy']:.2f} mm")
-        print(f"  error in depth    mean {s['z_mean']:+.2f} mm (glass above the pixels + bias), sd {s['z_std']:.2f} mm")
-        print(f"  3D RMS            {s['rms_3d']:.2f} mm ({s['rms_3d_offset_removed']:.2f} mm with the mean depth offset removed)")
-        print("\n  point   err x   err y   err z   spread")
-        for p in session.points:
-            if p.error is not None:
-                print(f"  {p.name:5}  {p.error[0]:+6.2f}  {p.error[1]:+6.2f}  {p.error[2]:+6.2f}   {p.spread:5.2f}")
-    print(f"\nwrote {points_csv} and {frames_csv}")
-    return 0
 
 
 def _angle_deg(Ra: np.ndarray, Rb: np.ndarray) -> float:

@@ -74,9 +74,10 @@ class BoardDetector:
         )
 
 
-def draw_detection(gray: np.ndarray, *dets: Detection | None, max_side: int = 1600) -> np.ndarray:
-    """Overlay of detected corners (red, then green, ...) downscaled for viewing."""
-    out = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+def draw_detection(image: np.ndarray, *dets: Detection | None, max_side: int = 1600) -> np.ndarray:
+    """Overlay of detected corners (red, then green, ...) downscaled for viewing.
+    Accepts a grayscale or colour image; returns a new colour image."""
+    out = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR) if image.ndim == 2 else image.copy()
     colors = [(0, 0, 255), (0, 200, 0), (255, 0, 0)]
     for det, color in zip(dets, colors):
         if det is not None:

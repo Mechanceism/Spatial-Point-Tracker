@@ -17,6 +17,9 @@ First result (Samsung S23, boards on a flat screen, 29 photos): the mean is with
 0.16 mm of the exact truth. A single photo is about 1.2 mm RMS, mostly in depth,
 and averaging views removes that. Details: [results](docs/PHASE0.md#results-s23--kamvas-pro-13-2026-11-27).
 
+**Phase 1, live capture (in progress).** Cameras by name and a live preview with
+board detection: [docs/CAMERAS.md](docs/CAMERAS.md). Next: guided live calibration.
+
 ## Quick start
 
 ```
@@ -28,6 +31,13 @@ python -m pytest
 python -m spt make-boards
 python -m spt calibrate captures/calib --square-mm 29.97
 python -m spt measure captures/measure --ref-square-mm 29.97 --tgt-square-mm 24.98 --known-mm 301.5
+```
+
+Live cameras:
+
+```
+python -m spt cameras --test
+python -m spt preview --camera nexigo
 ```
 
 No printer? Show the boards on a flat monitor (`python -m spt show ...`). The true
@@ -44,6 +54,7 @@ position is then known exactly; see [docs/PHASE0.md](docs/PHASE0.md#2a-or-show-t
 | `spt/pose.py` | Board pose and rigid transforms |
 | `spt/measure.py` | Phase 0 measurement and statistics |
 | `spt/display.py` | Boards shown full screen on a monitor, with exact truth |
+| `spt/cameras.py` | Camera listing by name, modes, low-latency live capture |
 | `spt/cli.py` | `python -m spt ...` commands |
 | `tests/` | Synthetic-image end-to-end tests |
 

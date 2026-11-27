@@ -12,6 +12,7 @@ import numpy as np
 
 from .boards import BOARDS, REFERENCE, TARGET, render_raster
 from .calibration import CameraCalibration, calibrate, coverage_image
+from .cameras import FpsMeter, LiveCamera, find_camera, list_cameras, sharpness
 from .detect import BoardDetector, draw_detection, image_size, list_images, load_gray, most_common_size
 from .display import LAYOUTS, Scene, list_monitors, make_scene, pitch_from_diagonal, show
 from .measure import PointMeasurer, Summary, summarize
@@ -70,6 +71,128 @@ def cmd_show(args: argparse.Namespace) -> int:
     if (w, h) != (mon.width, mon.height):
         print(f"WARNING: the window was {w} x {h}, not {mon.width} x {mon.height}: the boards were "
               "scaled and the scene file does not match what was shown.")
+    return 0
+
+
+def cmd_cameras(args: argparse.Namespace) -> int:
+    cameras = list_cameras(with_modes=True, include_virtual=args.all)
+    if not cameras:
+        print("no cameras found")
+        return 1
+    for cam in cameras:
+        print(f"  {cam.index}: {cam.name}{'  (virtual)' if cam.virtual else ''}")
+        by_format: dict[str, list] = {}
+        for m in cam.modes:
+            by_format.setdefault(m.fourcc, []).append(m)
+        for fourcc, modes in by_format.items():
+            shown = ", ".join(f"{m.width}x{m.height}@{m.fps:.0f}" for m in modes[:8])
+            more = f" (+{len(modes) - 8} more)" if len(modes) > 8 else ""
+            print(f"       {fourcc:5} {shown}{more}")
+        best = cam.best_mode()
+        if best:
+            print(f"       default: {best}")
+        if args.test and not cam.virtual and best:
+            try:
+                with LiveCamera(cam.index, best.width, best.height, best.fps, best.fourcc) as live:
+                    first = live.read(timeout=8.0)
+                    time.sleep(2.0)
+                    last = live.read(after=first.number, timeout=5.0)
+                    w, h = live.size
+                    rate = (last.number - first.number) / (last.time - first.time)
+                    print(f"       test:    got {w}x{h} {live.fourcc} at {rate:.1f} fps")
+            except (RuntimeError, TimeoutError) as e:
+                print(f"       test:    FAILED - {e}")
+    print("\nPreview one with: python -m spt preview --camera NAME   (part of the name is enough)")
+    return 0
+
+
+def _put_lines(img: np.ndarray, lines: list[str]) -> None:
+    """White status text on a darkened band across the top, readable on any scene."""
+    band = img[: 14 + 26 * len(lines)]
+    band[:] = (band * 0.35).astype(img.dtype)
+    for row, text in enumerate(lines):
+        cv2.putText(img, text, (10, 28 + 26 * row), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (255, 255, 255), 1, cv2.LINE_AA)
+
+
+def cmd_preview(args: argparse.Namespace) -> int:
+    cam_info = find_camera(args.camera, list_cameras(with_modes=True, include_virtual=True))
+    mode = cam_info.best_mode()
+    width = height = None
+    if args.mode:
+        width, height = (int(v) for v in args.mode.lower().split("x"))
+    elif mode:
+        width, height = mode.width, mode.height
+    fps = args.fps or (mode.fps if mode else None)
+
+    specs = []
+    if args.detect in ("reference", "both"):
+        specs.append(REFERENCE)
+    if args.detect in ("target", "both"):
+        specs.append(TARGET)
+    detectors = [BoardDetector(s) for s in specs]
+    save_dir = Path(args.save_dir)
+
+    live = LiveCamera(cam_info.index, width, height, fps, args.fourcc).start()
+    window = f"Preview - {cam_info.name}"
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    shown = FpsMeter()
+    detect_on = bool(detectors)
+    last = 0
+    stop_at = None if args.seconds is None else time.perf_counter() + args.seconds
+    print(f"{cam_info.name}: requested {width}x{height} @ {fps} fps {args.fourcc}")
+    print("Keys: q/Esc quit, s save frame, c camera settings dialog, d detection on/off")
+    try:
+        while True:
+            try:
+                frame = live.read(after=last, timeout=5.0)
+            except TimeoutError as e:
+                print(e)
+                return 1
+            last = frame.number
+            started = time.perf_counter()
+            gray = cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY)
+            dets = [d.detect(gray) for d in detectors] if detect_on else []
+            sharp = sharpness(gray)
+            work_ms = (time.perf_counter() - started) * 1000
+            shown.tick()
+
+            disp = draw_detection(frame.image, *dets, max_side=args.max_side)
+            w, h = live.size
+            lag_ms = (time.perf_counter() - frame.time) * 1000
+            parts = [f"sharpness {sharp:.0f}"]
+            for spec, det in zip(specs, dets):
+                parts.append(f"{spec.name} {0 if det is None else len(det)}/{spec.corner_count} corners")
+            _put_lines(disp, [
+                f"{cam_info.name}  {w}x{h} {live.fourcc}  camera {live.fps:.1f} fps  shown {shown.fps:.1f} fps  "
+                f"processing {work_ms:.0f} ms  lag {lag_ms:.0f} ms",
+                "   ".join(parts),
+                "q quit   s save frame   c camera settings   d detection on/off",
+            ])
+            cv2.imshow(window, disp)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key in (27, ord("q")) or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+                break
+            if stop_at is not None and time.perf_counter() >= stop_at:
+                if args.save_last:
+                    cv2.imwrite(args.save_last, disp)
+                print(f"camera {live.fps:.1f} fps, shown {shown.fps:.1f} fps, processing {work_ms:.0f} ms")
+                break
+            if key == ord("s"):
+                save_dir.mkdir(parents=True, exist_ok=True)
+                stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
+                safe = "".join(ch if ch.isalnum() else "_" for ch in cam_info.name).strip("_")
+                path = save_dir / f"{safe}_{stamp}.png"
+                cv2.imwrite(str(path), frame.image)
+                print(f"saved {path}")
+            elif key == ord("c"):
+                live.open_settings()
+            elif key == ord("d") and detectors:
+                detect_on = not detect_on
+    finally:
+        live.stop()
+        cv2.destroyAllWindows()
     return 0
 
 
@@ -261,6 +384,23 @@ def build_parser() -> argparse.ArgumentParser:
     mb.add_argument("--paper", choices=sorted(PAPER_MM), default="letter")
     mb.add_argument("--out", default="output/boards")
     mb.set_defaults(func=cmd_make_boards)
+
+    ca = sub.add_parser("cameras", help="list cameras and their modes")
+    ca.add_argument("--all", action="store_true", help="include virtual cameras")
+    ca.add_argument("--test", action="store_true", help="open each camera and measure its real frame rate")
+    ca.set_defaults(func=cmd_cameras)
+
+    pv = sub.add_parser("preview", help="live camera view with optional board detection")
+    pv.add_argument("--camera", required=True, help="index or part of the name (see 'cameras')")
+    pv.add_argument("--mode", help="WIDTHxHEIGHT (default: largest MJPG mode at 15+ fps)")
+    pv.add_argument("--fps", type=float)
+    pv.add_argument("--fourcc", default="MJPG")
+    pv.add_argument("--detect", choices=["none", "reference", "target", "both"], default="both")
+    pv.add_argument("--save-dir", default="captures/preview")
+    pv.add_argument("--max-side", type=int, default=1600, help="display size limit (px)")
+    pv.add_argument("--seconds", type=float, help="close automatically after this long")
+    pv.add_argument("--save-last", help="with --seconds: save the last displayed view here")
+    pv.set_defaults(func=cmd_preview)
 
     mo = sub.add_parser("monitors", help="list monitors (for show)")
     mo.set_defaults(func=cmd_monitors)

@@ -66,8 +66,19 @@ class ProbeSpec:
         return cls.from_json(json.loads(Path(path).read_text()))
 
     def with_square_mm(self, square_mm: float) -> "ProbeSpec":
-        """The probe after measuring the real (displayed) square size."""
-        spec = ProbeSpec(self.name, self.board.scaled(square_mm), self.tip, dict(self.screen))
+        """The probe with a corrected square size.
+
+        A calibrated tip offset is rescaled too. Every distance derived from images of
+        the board is in units of its assumed square size, so a pivot calibration done
+        with the old size gives a tip offset that is off by exactly the same factor.
+        """
+        k = square_mm / self.board.square_mm
+        tip = Tip(**self.tip.__dict__)
+        if tip.offset is not None:
+            tip.offset = [round(v * k, 4) for v in tip.offset]
+            if tip.rms_mm is not None:
+                tip.rms_mm = round(tip.rms_mm * k, 4)
+        spec = ProbeSpec(self.name, self.board.scaled(square_mm), tip, dict(self.screen))
         if spec.screen:
             spec.screen["pitch_mm"] = square_mm / spec.screen["square_px"]
         return spec

@@ -513,11 +513,21 @@ def cmd_probe_image(args: argparse.Namespace) -> int:
 
 def cmd_probe_scale(args: argparse.Namespace) -> int:
     probe = ProbeSpec.load(args.probe)
-    old = probe.board.square_mm
-    probe = probe.with_square_mm(args.measured_mm / args.squares)
+    old, old_tip = probe.board.square_mm, probe.tip.offset
+    if args.ppi:
+        if not probe.screen:
+            raise SystemExit("--ppi needs a probe shown on a screen")
+        square = probe.screen["square_px"] * 25.4 / args.ppi
+    elif args.measured_mm and args.squares:
+        square = args.measured_mm / args.squares
+    else:
+        raise SystemExit("give --ppi, or --measured-mm with --squares")
+    probe = probe.with_square_mm(square)
     probe.save(args.probe)
     change = (probe.board.square_mm / old - 1) * 100
     print(f"square {old:.4f} -> {probe.board.square_mm:.4f} mm ({change:+.2f} %), saved {args.probe}")
+    if old_tip is not None:
+        print(f"  tip offset rescaled with it: {old_tip} -> {probe.tip.offset}")
     if abs(change) > 3:
         print("  WARNING: more than 3 % off the nominal size - check the measurement and that the image is shown full screen")
     return 0
@@ -1042,8 +1052,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     ps = sub.add_parser("probe-scale", help="set the probe board's measured square size")
     ps.add_argument("--probe", required=True)
-    ps.add_argument("--measured-mm", type=float, required=True, help="caliper distance between inner corners")
-    ps.add_argument("--squares", type=int, required=True, help="number of squares that distance spans")
+    ps.add_argument("--measured-mm", type=float, help="caliper distance between inner corners")
+    ps.add_argument("--squares", type=int, help="number of squares that distance spans")
+    ps.add_argument("--ppi", type=float, help="instead: the screen's pixels per inch (S23: 425)")
     ps.set_defaults(func=cmd_probe_scale)
 
     pv2 = sub.add_parser("pivot", help="pivot calibration: find the probe tip by rotating around it")

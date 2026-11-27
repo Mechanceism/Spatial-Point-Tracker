@@ -38,7 +38,13 @@ between inner corners **6 squares down** (~90 mm), and 2 across (~30 mm) as a ch
 
 ```
 python -m spt probe-scale --probe output/probe_s23.probe.json --measured-mm 89.65 --squares 6
+python -m spt probe-scale --probe output/probe_s23.probe.json --ppi 425     # or from the spec sheet
 ```
+
+Rescaling also rescales an already calibrated tip by the same factor (exact for a
+pivot done with a fixed camera), so the order of the steps doesn't matter. The S23
+uses the spec-sheet 425 ppi (14.941 mm squares); a caliper reading of "15 mm" was
+rounded.
 
 ## 3. Pivot calibration
 
@@ -61,8 +67,8 @@ or less. `q` saves the tip into the probe file, and every sampled pose goes to
 `output/pivot_<probe>_<time>.csv`.
 
 First result (S23 + pencil, NexiGo, 2026-11-27): 266 samples, 37 degrees spread, tip at
-(28.6, -71.1, 16.2) mm (the pencil point was ~61 mm above the screen edge, not the
-estimated 50), **residual 1.46 mm RMS**. The residual is mostly the geometry: the tip
+(28.4, -70.8, 16.2) mm after rescaling to the spec-sheet 425 ppi (the pencil point was
+~61 mm above the screen edge, not the estimated 50), **residual 1.46 mm RMS**. The residual is mostly the geometry: the tip
 is ~130 mm from the centre of a 60 x 120 mm board, so a 0.5 degree orientation error
 alone moves it ~1.1 mm. Design rule for the printed probe: keep the tip close to the
 markers, and make the marker area at least as large as the tip's distance from it.

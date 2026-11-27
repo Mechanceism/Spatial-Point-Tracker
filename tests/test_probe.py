@@ -76,6 +76,26 @@ def test_screen_probe_layout_and_round_trip(tmp_path):
     assert m.board.square_mm == 15.1 and m.screen["pitch_mm"] == pytest.approx(15.1 / 250)
 
 
+def test_rescaling_the_board_rescales_a_calibrated_tip():
+    """A pivot calibration done with a wrong board size gives a tip scaled by the
+    same factor; rescaling the board must fix both."""
+    true_size, wrong_size = 25.4 / 425 * 250, 15.0
+    calib = CameraCalibration(SIZE, K.copy(), np.zeros(5))
+    truth = screen_probe("s23", 1080, 2340, 25.4 / 425)
+    wrong = truth.with_square_mm(wrong_size)
+    detector = BoardDetector(wrong.board)
+    est = []
+    for pose in poses_about_pivot(ANGLES, pivot=np.array([0.0, -80.0, 380.0])):
+        img = render([(truth.board, pose.R, pose.t)], px_per_mm=12)  # the real board
+        est.append(estimate_pose(detector, detector.detect(img), calib))  # measured with the wrong size
+    r, _ = solve_pivot_robust(est)
+    assert np.allclose(r.tip, TIP * wrong_size / true_size, atol=1.0)
+    wrong.tip.offset = r.tip.tolist()
+    fixed = wrong.with_square_mm(true_size)
+    assert fixed.board.square_mm == pytest.approx(true_size)
+    assert np.linalg.norm(np.array(fixed.tip.offset) - TIP) < 1.0
+
+
 def test_pivot_from_rendered_probe_images():
     """End to end: render the probe board rotating about the tip, detect, estimate
     poses, solve. Checks the probe frame conventions as well as the maths."""

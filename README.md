@@ -3,6 +3,8 @@
 Capture 3D points on real objects with a camera, printed fiducial markers and a touch
 probe, for use in other software (suspension hardpoints, vehicle body lines, CAD).
 
+Progress and next steps: [GOALS.md](GOALS.md).
+
 Target accuracy is 1-2 mm. Markers are the measurement source; phone AR and the IMU
 only help in between. See [docs/PLAN.md](docs/PLAN.md) for the design decisions and
 phases.

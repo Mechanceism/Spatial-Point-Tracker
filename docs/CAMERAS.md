@@ -51,6 +51,13 @@ to save. Esc quits without saving. The calibration goes to `output/<camera>.cali
 and records the camera and mode. The accepted frames are saved to
 `captures/calib_live/...` so `python -m spt calibrate` can redo it offline.
 
+First run (2026-11-27), NexiGo N930E at 1920x1080 with the board on the Kamvas
+held at 29-42 cm: 17 views captured, **RMS 0.18 px**, coverage 85 %, fx 1471.2 +/- 1.2 px
+(66 degree horizontal field of view). Turn tilts reached 35 degrees, but forward/back
+only 18 (goal 20), so the "done" criteria weren't met; with fx already determined to
+0.08 %, this is a minor gap. For comparison, the S23 photos had fx 2705 px over a 73
+degree view, so the S23 resolves about 1.8x finer detail per degree than the NexiGo.
+
 ## How frames are read
 
 `LiveCamera` reads the camera on a background thread and keeps only the newest frame,

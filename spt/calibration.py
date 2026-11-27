@@ -80,6 +80,29 @@ def coverage_fraction(points: list[np.ndarray], image_size: tuple[int, int], gri
     return float(hit.mean())
 
 
+def coverage_image(points: list[np.ndarray], image_size: tuple[int, int], grid=(8, 6), width: int = 1000) -> np.ndarray:
+    """Map of where detected corners fall in the frame: covered grid cells green,
+    empty cells red. Calibration needs (nearly) all cells covered."""
+    w, h = image_size
+    s = width / w
+    out = np.full((round(h * s), width, 3), 255, dtype=np.uint8)
+    hit = np.zeros(grid[::-1], dtype=bool)
+    for pts in points:
+        gx = np.clip((pts[:, 0] / w * grid[0]).astype(int), 0, grid[0] - 1)
+        gy = np.clip((pts[:, 1] / h * grid[1]).astype(int), 0, grid[1] - 1)
+        hit[gy, gx] = True
+    cw, ch = out.shape[1] / grid[0], out.shape[0] / grid[1]
+    for gy in range(grid[1]):
+        for gx in range(grid[0]):
+            color = (200, 240, 200) if hit[gy, gx] else (200, 200, 255)
+            cv2.rectangle(out, (round(gx * cw), round(gy * ch)), (round((gx + 1) * cw), round((gy + 1) * ch)), color, -1)
+            cv2.rectangle(out, (round(gx * cw), round(gy * ch)), (round((gx + 1) * cw), round((gy + 1) * ch)), (150, 150, 150), 1)
+    for pts in points:
+        for x, y in pts:
+            cv2.circle(out, (round(x * s), round(y * s)), 2, (60, 60, 60), -1)
+    return out
+
+
 def calibrate(
     views: list[tuple[str, Detection]],
     spec: BoardSpec,

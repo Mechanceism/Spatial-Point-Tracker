@@ -67,6 +67,14 @@ def test_calibration_json_round_trip(calib, tmp_path):
     assert json.loads(path.read_text())["format"] == 1
 
 
+def test_coverage_image_marks_empty_cells():
+    from spt.calibration import coverage_image
+    img = coverage_image([np.array([[10.0, 10.0]])], (1600, 1200), grid=(8, 6), width=800)
+    assert img.shape == (600, 800, 3)
+    assert tuple(img[50, 50]) == (200, 240, 200)  # covered cell (top-left), green
+    assert tuple(img[550, 750]) == (200, 200, 255)  # empty cell (bottom-right), red
+
+
 def test_calibration_needs_enough_views(calibration_views):
     with pytest.raises(ValueError):
         calibrate(calibration_views[:3], REFERENCE, SIZE)

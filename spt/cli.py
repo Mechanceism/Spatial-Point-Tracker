@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 from .boards import BOARDS, REFERENCE, TARGET, render_raster
-from .calibration import CameraCalibration, calibrate
+from .calibration import CameraCalibration, calibrate, coverage_image
 from .detect import BoardDetector, draw_detection, image_size, list_images, load_gray, most_common_size
 from .display import LAYOUTS, Scene, list_monitors, make_scene, pitch_from_diagonal, show
 from .measure import PointMeasurer, Summary, summarize
@@ -128,6 +128,10 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
             calib = calibrate(views, spec, size, rational=args.rational)
     calib.save(args.out)
     elapsed = time.perf_counter() - started
+    if debug:
+        used = {v["file"] for v in calib.views}
+        cv2.imwrite(str(debug / "coverage.png"),
+                    coverage_image([d.corners for n, d in views if n in used], size))
 
     K = calib.camera_matrix
     std = calib.std_intrinsics

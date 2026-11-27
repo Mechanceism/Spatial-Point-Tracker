@@ -144,9 +144,24 @@ Why this shape (simulated tip error per frame, before averaging):
   at 1.5 m, 1.7-2.4 mm at 2.5 m, 3.4-4.6 mm at 3.5 m. 80 mm faces would reach 3.5 m at
   2.5-3.5 mm.
 
+With the **S23 as the camera** (4K video, field of view from the phase 0
+calibration), about 1.8x the NexiGo's pixels per degree:
+
+| Probe, tip 80 / 150 mm | 0.4 m | 0.8 m | 1.2 m | 1.5 m | 2.5 m | 3.5 m |
+|---|---|---|---|---|---|---|
+| `hex30`, NexiGo | 0.2-0.3 | 1.0-1.1 | ~10 (unreliable) | not seen | | |
+| `hex30`, S23 4K | 0.1-0.2 | 0.5-0.6 | 1.0-1.4 | 2.1-2.4 | not seen | |
+| `hex60`, S23 4K | | | | 0.8-1.2 | 2.2-3.1 | 6-21 (side faces lost) |
+| `hex60`, 4K camera (UC40M est.) | | | | 0.6-0.9 | 1.7-2.4 | 3.4-4.6 |
+
+S23 **1080p** video is *worse* than the NexiGo (same pixels, wider view), so it only
+helps at 4K. A 4K stream must reach the host and be detected at ~15 fps (~56 ms per
+4K frame), with stabilisation off and focus locked.
+
 ```
 python -m spt prism-template          # output/prisms/<design>_template.pdf + <design>.prism.json
 python scripts/probe_size_sim.py      # rerun the comparison (e.g. for a redesign)
+python scripts/probe_size_sim.py --table small --cameras "S23 4K video"
 ```
 
 The templates are letter-size wrap-around strips. Print at 100 %, check the 100 mm

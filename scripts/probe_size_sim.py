@@ -26,6 +26,10 @@ CAMERAS = {
     # name: (fx, width, height)
     "NexiGo 1080p": (1471.0, 1920, 1080),  # calibrated
     "4K camera": (3400.0, 3840, 2160),  # e.g. UC40M at the wide end of its zoom (estimate)
+    # S23 main camera: phase 0 photos (4000x2252) calibrated to fx 2705 px. 4K video
+    # assumed to keep that field of view (stabilisation crop would only raise fx).
+    "S23 4K video": (2597.0, 3840, 2160),
+    "S23 1080p video": (1299.0, 1920, 1080),
 }
 
 
@@ -120,6 +124,11 @@ def table(title, designs, tips, distances, views, camera):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--cameras", nargs="+", choices=list(CAMERAS), help="default: NexiGo (small), NexiGo + 4K (body)")
+    ap.add_argument("--table", choices=["small", "body", "all"], default="all")
+    args = ap.parse_args()
     small = {
         "phone board 60x120 (ChArUco, 15 mm squares)": (flat_charuco(60, 120, 3, 7, 15), CHARUCO_SIGMA),
         "triangular prism, 30 mm faces": (prism(3, 30, 30), ARUCO_SIGMA),
@@ -127,7 +136,11 @@ def main():
         "square prism 40w x 80 long, 2 markers/face": (prism(4, 40, 80, 2), ARUCO_SIGMA),
         "hex prism 30w x 60 long, 2 markers/face": (prism(6, 30, 60, 2), ARUCO_SIGMA),
     }
-    table("Small work (0.4-0.8 m)", small, [50, 80, 120], [400, 800], [0, 45], "NexiGo 1080p")
+    if args.table in ("small", "all"):
+        for cam in args.cameras or ["NexiGo 1080p"]:
+            table("Small work (0.4-0.8 m)", small, [50, 80, 120], [400, 800, 1200], [0, 45], cam)
+    if args.table == "small":
+        return
 
     big = {
         "hex prism 30w x 60 long, 2 markers/face": (prism(6, 30, 60, 2), ARUCO_SIGMA),
@@ -135,7 +148,7 @@ def main():
         "hex prism 60w x 120 long, 2 markers/face": (prism(6, 60, 120, 2), ARUCO_SIGMA),
         "hex prism 80w x 160 long, 2 markers/face": (prism(6, 80, 160, 2), ARUCO_SIGMA),
     }
-    for cam in CAMERAS:
+    for cam in args.cameras or ["NexiGo 1080p", "4K camera"]:
         table("Body lines (1.5-3.5 m)", big, [150, 300], [1500, 2500, 3500], [0, 30], cam)
 
 

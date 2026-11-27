@@ -78,6 +78,30 @@ turn the screen (20 mm or 5 degrees) for the next one. `q` finishes and prints:
 Every frame is written to `output/measure_live_<camera>_<time>.csv`, and one image
 per capture goes to `captures/measure_live/`.
 
+### Result: NexiGo + Kamvas (2026-11-27)
+
+45 captures (2645 frames) at 245-410 mm, against the exact 175.49 mm truth:
+
+| Level | Error |
+|---|---|
+| Single frame | 0.48 mm RMS (x 0.17, y 0.16, **z 0.42**) |
+| Frame noise within a capture | 0.32 mm |
+| One capture (15 frames, ~0.5 s) | **0.27 mm RMS**, worst 0.58 mm |
+| Average of 3 captures from different viewpoints | 0.16 mm RMS, 95 % within 0.28 mm |
+| Mean of all 45 captures | 0.05 mm |
+
+- About 2.4x better than the S23 photos of phase 0 (1.16 mm per photo), despite
+  half the resolution. Likely reasons: a better calibration (0.18 vs 0.54 px, made
+  live through the same pipeline), a closer distance, and no phone image processing
+  or stabilization in between.
+- **Averaging frames does help** with a webcam: frame noise (0.32 mm) is a real part
+  of the single-frame error. After 15 frames, what's left is almost all viewpoint
+  error (0.25 of the 0.27 mm), which only averaging different viewpoints reduces.
+- Error grew with distance even within this range (0.23 mm at 240-320 mm, 0.35 mm at
+  370-420 mm).
+- Caveat: best case. The screen is perfectly flat, the boards are large in the frame,
+  and the distances are short.
+
 ## How frames are read
 
 `LiveCamera` reads the camera on a background thread and keeps only the newest frame,

@@ -189,7 +189,9 @@ What it means:
 1. **Average over several viewpoints, not just several frames.** Frames from one
    position share the same pose error. A capture should combine views from a few
    camera positions (or two cameras), or the probe should be held while the camera
-   moves.
+   moves. (The live NexiGo test refined this: with a webcam, averaging ~15 frames
+   also helps, since frame noise is real. After that, viewpoints are what's left. See
+   [CAMERAS.md](CAMERAS.md#result-nexigo--kamvas-2026-11-27).)
 2. **Keep reference markers close to the points.** The z error grows with distance
    from the reference board (this test: 175 mm). Several reference boards spread
    around the work area beat one far away.

@@ -752,11 +752,18 @@ def cmd_digitize(args: argparse.Namespace) -> int:
                 "move": "move to the next point",
             }.get(step.state, "")
             out = _with_panel(out, [line1, line2, f"> {hint}",
-                                    "red circle = tip   magenta = targets   points save as you go   q / Esc finish"], scale=0.8)
+                                    "red circle = tip   magenta = targets   u undo last point   q / Esc finish (saved as you go)"], scale=0.8)
             cv2.imshow(window, out)
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q")) or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
                 break
+            if key == ord("u"):
+                dropped = session.undo()
+                if dropped is not None:
+                    message, message_until = f"removed {dropped.name} (point {dropped.number})", time.perf_counter() + 2.5
+                    print(f"  undo: removed {dropped.name}")
+                    _beep(500, 150)
+                    _save_digitized(session, points_csv, frames_csv)
     finally:
         live.stop()
         cv2.destroyAllWindows()

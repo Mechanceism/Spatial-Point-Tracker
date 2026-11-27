@@ -80,3 +80,18 @@ def test_missing_probe_and_uncalibrated_tip():
     assert step.state == "none" and step.reason == "probe not found"
     with pytest.raises(ValueError):
         DigitizeSession(CameraCalibration(SIZE, K.copy(), np.zeros(5)), REF, screen_probe("x", 1080, 2340, 0.06))
+
+
+def test_undo_drops_the_last_point_and_rearms():
+    pts = SCENE.target_points()
+    s = session(frames=4)
+    img = photo_touching(pts["T1"])
+    for _ in range(5):
+        s.update("f", img)
+    assert len(s.points) == 1
+    dropped = s.undo()
+    assert dropped.name == "T1" and s.points == []
+    assert all(n == 0 for n, _ in s.samples)  # frames kept, untagged
+    states = [s.update("f", img).state for _ in range(4)]
+    assert states[-1] == "captured"  # re-armed without moving away
+    assert s.undo() is not None and s.undo() is None

@@ -151,6 +151,17 @@ class DigitizeSession:
         self._armed = False
         return DigitizeStep("captured", sample, progress=1.0, point=point, nearest=nearest)
 
+    def undo(self) -> CapturedPoint | None:
+        """Drop the last captured point (a bad touch). Its frames stay in the raw log,
+        untagged, and capturing is re-armed."""
+        if not self.points:
+            return None
+        point = self.points.pop()
+        self.samples = [(0 if n == point.number else n, s) for n, s in self.samples]
+        self._window.clear()
+        self._armed = True
+        return point
+
     def summary(self) -> dict:
         matched = [p for p in self.points if p.error is not None]
         out: dict = {"points": len(self.points), "matched": len(matched)}

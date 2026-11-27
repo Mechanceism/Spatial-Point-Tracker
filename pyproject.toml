@@ -1,0 +1,9 @@
+[project]
+name = "spatial-point-tracker"
+version = "0.0.1"
+description = "Capture 3D points with a camera, fiducial markers and a touch probe"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

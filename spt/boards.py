@@ -70,7 +70,10 @@ class BoardSpec:
 # detected in one photo.
 REFERENCE = BoardSpec("reference", 7, 5, 30.0, 22.0, first_id=0)
 TARGET = BoardSpec("target", 5, 4, 25.0, 18.0, first_id=20)
-BOARDS = {b.name: b for b in (REFERENCE, TARGET)}
+# Carried by the probe (first version: shown on a phone screen). Its real square
+# size comes from the probe file, since it depends on the screen.
+PROBE = BoardSpec("probe", 4, 8, 15.0, 10.5, first_id=40)
+BOARDS = {b.name: b for b in (REFERENCE, TARGET, PROBE)}
 
 
 def layout_rects(spec: BoardSpec) -> list[tuple[float, float, float, float]]:

@@ -55,6 +55,9 @@ position is then known exactly; see [docs/PHASE0.md](docs/PHASE0.md#2a-or-show-t
 | `spt/measure.py` | Phase 0 measurement and statistics |
 | `spt/display.py` | Boards shown full screen on a monitor, with exact truth |
 | `spt/cameras.py` | Camera listing by name, modes, low-latency live capture |
+| `spt/guided.py` | Guided live calibration logic |
+| `spt/live_measure.py` | Live measurement test logic |
+| `spt/probe.py`, `spt/pivot.py` | Probe board/tip files and pivot calibration ([docs/PROBE.md](docs/PROBE.md)) |
 | `spt/cli.py` | `python -m spt ...` commands |
 | `tests/` | Synthetic-image end-to-end tests |
 

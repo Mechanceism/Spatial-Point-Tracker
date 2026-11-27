@@ -22,6 +22,9 @@ from .live_measure import LiveMeasureSession
 from .measure import PointMeasurer, Summary, summarize
 from .pdf import write_pdf
 from .printable import PAPER_MM, board_page
+from .pivot import solve_pivot_robust
+from .pose import Pose, estimate_pose
+from .probe import ProbeSpec, screen_image, screen_probe
 
 
 def cmd_make_boards(args: argparse.Namespace) -> int:
@@ -483,6 +486,153 @@ def _print_live_summary(session: LiveMeasureSession, truth_mm: float) -> None:
             print(f"  {c.number:7d}   {err:8.2f}   {c.frame_spread:14.2f}   {dist:9.0f}")
 
 
+def cmd_probe_image(args: argparse.Namespace) -> int:
+    probe = screen_probe(args.name, args.width, args.height, args.pitch_mm)
+    sq_mm = probe.board.square_mm
+    oy = probe.screen["origin_px"][1] * args.pitch_mm
+    # Rough tip position from the hand measurements (probe frame: x right, y down, z
+    # into the screen): centred, above the top edge of the screen, behind its surface.
+    probe.tip.guess = [round(probe.board.squares_x * sq_mm / 2, 2), round(-(oy + args.tip_above_mm), 2), args.tip_back_mm]
+    probe.tip.kind = args.tip
+    probe.tip.radius_mm = args.ball_radius_mm if args.tip == "ball" else 0.0
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    png, spec_path = out.with_suffix(".png"), out.with_suffix(".probe.json")
+    cv2.imwrite(str(png), screen_image(probe))
+    probe.save(spec_path)
+    b = probe.board
+    print(f"wrote {png} ({args.width} x {args.height}) and {spec_path}")
+    print(f"  board {b.squares_x} x {b.squares_y} squares of {probe.screen['square_px']} px "
+          f"= {sq_mm:.3f} mm nominal, marker IDs {b.ids[0]}-{b.ids[-1]}")
+    print(f"  tip guess (probe frame) {probe.tip.guess} mm")
+    print(f"Show it full screen on the phone, then measure {b.squares_y - 2} squares down between inner corners and run:")
+    print(f"  python -m spt probe-scale --probe {spec_path} --measured-mm <mm> --squares {b.squares_y - 2}")
+    return 0
+
+
+def cmd_probe_scale(args: argparse.Namespace) -> int:
+    probe = ProbeSpec.load(args.probe)
+    old = probe.board.square_mm
+    probe = probe.with_square_mm(args.measured_mm / args.squares)
+    probe.save(args.probe)
+    change = (probe.board.square_mm / old - 1) * 100
+    print(f"square {old:.4f} -> {probe.board.square_mm:.4f} mm ({change:+.2f} %), saved {args.probe}")
+    if abs(change) > 3:
+        print("  WARNING: more than 3 % off the nominal size - check the measurement and that the image is shown full screen")
+    return 0
+
+
+def cmd_pivot(args: argparse.Namespace) -> int:
+    probe = ProbeSpec.load(args.probe)
+    calib = CameraCalibration.load(args.calib)
+    query = args.camera or calib.camera.get("name")
+    cam_info = find_camera(query, list_cameras(with_modes=True, include_virtual=True))
+    width, height = calib.image_size
+    mode = cam_info.best_mode()
+    detector = BoardDetector(probe.board)
+    K, dist = calib.camera_matrix, calib.dist_coeffs
+
+    live = LiveCamera(cam_info.index, width, height, mode.fps if mode else None, "MJPG").start()
+    window = f"Pivot calibration - {cam_info.name}"
+    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    if args.monitor:
+        mon = {m.index: m for m in list_monitors()}.get(args.monitor)
+        if mon:
+            cv2.moveWindow(window, mon.x + 20, mon.y + 20)
+            cv2.resizeWindow(window, min(mon.width - 40, args.max_side), min(mon.height - 80, round(args.max_side * height / width)))
+    print(f"{cam_info.name}: put the tip in a small dent and rotate the probe around it. q saves, Esc cancels.")
+    poses: list[Pose] = []
+    prev: Pose | None = None
+    result, keep, was_done = None, [], False
+    last = 0
+    try:
+        while True:
+            frame = live.read(after=last, timeout=5.0)
+            last = frame.number
+            det = detector.detect(cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY))
+            pose = estimate_pose(detector, det, calib, min_corners=args.min_corners)
+            state = "none"
+            if pose is not None and pose.rms_px <= args.max_rms:
+                turn = 999.0 if prev is None else _angle_deg(prev.R, pose.R)
+                state = "fast" if turn > args.max_turn else "ok"
+                if state == "ok" and (not poses or min(_angle_deg(p.R, pose.R) for p in poses[-5:]) >= args.min_step):
+                    poses.append(pose)
+                    state = "sample"
+                    if len(poses) >= 6 and len(poses) % 3 == 0:
+                        result, keep = solve_pivot_robust(poses)
+            prev = pose
+            done = (result is not None and len(keep) >= args.samples and result.spread_deg >= args.spread
+                    and result.rms_mm <= args.max_residual)
+            if done and not was_done:
+                _beep(1800, 300)
+                was_done = True
+
+            out = frame.image.copy()
+            if det is not None:
+                for x, y in det.corners:
+                    cv2.circle(out, (round(x), round(y)), 4, (0, 255, 0), -1, cv2.LINE_AA)
+            if result is not None and pose is not None:
+                tip_cam = pose.apply(result.tip)
+                piv, _ = cv2.projectPoints(result.pivot.reshape(1, 3), np.zeros(3), np.zeros(3), K, dist)
+                tip, _ = cv2.projectPoints(tip_cam.reshape(1, 3), np.zeros(3), np.zeros(3), K, dist)
+                cv2.drawMarker(out, tuple(np.round(piv.ravel()).astype(int)), (255, 0, 255), cv2.MARKER_CROSS, 40, 2)
+                cv2.circle(out, tuple(np.round(tip.ravel()).astype(int)), 10, (0, 0, 255), 3, cv2.LINE_AA)
+            if not args.no_mirror:
+                out = cv2.flip(out, 1)
+            h, w = out.shape[:2]
+            color = {"sample": (0, 220, 0), "ok": (0, 220, 255), "fast": (0, 140, 255), "none": (0, 0, 200)}[state]
+            cv2.rectangle(out, (0, 0), (w - 1, h - 1), color, max(6, w // 100))
+            scale = args.max_side / max(w, h)
+            if scale < 1:
+                out = cv2.resize(out, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            if result is None:
+                line1 = f"samples {len(poses)} - need 6 to start"
+            else:
+                t = result.tip
+                line1 = (f"samples {len(keep)}/{args.samples}   spread {result.spread_deg:.0f}/{args.spread:.0f} deg   "
+                         f"residual RMS {result.rms_mm:.2f} mm (goal {args.max_residual:g})   tip x {t[0]:.1f} y {t[1]:.1f} z {t[2]:.1f}")
+            hint = {
+                "none": "show the probe board to the camera" if pose is None else "board fit poor - check glare / focus",
+                "fast": "slower",
+                "ok": "keep rotating around the tip: tilt left, right, forward, back",
+                "sample": "keep rotating around the tip: tilt left, right, forward, back",
+            }[state]
+            if done:
+                hint = "DONE - press q to save (red circle should sit on the tip)"
+            out = _with_panel(out, [line1, f"> {hint}", "red circle = estimated tip   magenta cross = pivot   q save   Esc cancel"], scale=0.8)
+            cv2.imshow(window, out)
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+                print("cancelled, nothing saved")
+                return 1
+            if key == ord("q"):
+                break
+    finally:
+        live.stop()
+        cv2.destroyAllWindows()
+
+    if result is None:
+        print("not enough samples, nothing saved")
+        return 1
+    result, keep = solve_pivot_robust(poses)
+    probe.tip.offset = [round(float(v), 4) for v in result.tip]
+    probe.tip.rms_mm = round(result.rms_mm, 4)
+    probe.tip.samples = len(keep)
+    probe.save(args.probe)
+    print(f"\nPivot calibration: {len(keep)} of {len(poses)} samples used, rotation spread {result.spread_deg:.0f} deg")
+    print(f"  tip (probe frame)  x {result.tip[0]:.2f}  y {result.tip[1]:.2f}  z {result.tip[2]:.2f} mm")
+    print(f"  residual           RMS {result.rms_mm:.2f} mm, worst {result.residuals.max():.2f} mm")
+    if probe.tip.guess:
+        d = result.tip - np.array(probe.tip.guess)
+        print(f"  vs hand guess      dx {d[0]:+.1f}  dy {d[1]:+.1f}  dz {d[2]:+.1f} mm")
+    print(f"saved {args.probe}")
+    return 0
+
+
+def _angle_deg(Ra: np.ndarray, Rb: np.ndarray) -> float:
+    return float(np.degrees(np.arccos(np.clip((np.trace(Ra.T @ Rb) - 1) / 2, -1.0, 1.0))))
+
+
 def _load_views(folder: str):
     """Yield (path, gray) for every image in the folder."""
     paths = list_images(folder)
@@ -722,6 +872,40 @@ def build_parser() -> argparse.ArgumentParser:
     ml.add_argument("--max-side", type=int, default=1800)
     ml.add_argument("--no-mirror", action="store_true")
     ml.set_defaults(func=cmd_measure_live)
+
+    pi = sub.add_parser("probe-image", help="probe board image for a phone screen + probe file")
+    pi.add_argument("--name", default="s23")
+    pi.add_argument("--width", type=int, default=1080, help="phone screen width (portrait) px")
+    pi.add_argument("--height", type=int, default=2340, help="phone screen height (portrait) px")
+    pi.add_argument("--pitch-mm", type=float, default=25.4 / 425, help="pixel pitch (S23: 425 ppi)")
+    pi.add_argument("--tip-above-mm", type=float, default=50.0, help="tip distance above the top edge of the screen")
+    pi.add_argument("--tip-back-mm", type=float, default=15.0, help="tip distance behind the screen surface")
+    pi.add_argument("--tip", choices=["sharp", "ball"], default="sharp")
+    pi.add_argument("--ball-radius-mm", type=float, default=0.0)
+    pi.add_argument("--out", default="output/probe_s23", help="output path without extension")
+    pi.set_defaults(func=cmd_probe_image)
+
+    ps = sub.add_parser("probe-scale", help="set the probe board's measured square size")
+    ps.add_argument("--probe", required=True)
+    ps.add_argument("--measured-mm", type=float, required=True, help="caliper distance between inner corners")
+    ps.add_argument("--squares", type=int, required=True, help="number of squares that distance spans")
+    ps.set_defaults(func=cmd_probe_scale)
+
+    pv2 = sub.add_parser("pivot", help="pivot calibration: find the probe tip by rotating around it")
+    pv2.add_argument("--probe", required=True, help="probe file (from probe-image)")
+    pv2.add_argument("--calib", required=True, help="camera calibration (its camera is used unless --camera)")
+    pv2.add_argument("--camera")
+    pv2.add_argument("--samples", type=int, default=60, help="samples needed")
+    pv2.add_argument("--spread", type=float, default=25.0, help="rotation spread needed (deg)")
+    pv2.add_argument("--max-residual", type=float, default=1.0, help="residual goal (mm)")
+    pv2.add_argument("--min-step", type=float, default=1.0, help="min rotation between samples (deg)")
+    pv2.add_argument("--max-turn", type=float, default=3.0, help="max rotation per frame (deg), against blur")
+    pv2.add_argument("--min-corners", type=int, default=8)
+    pv2.add_argument("--max-rms", type=float, default=1.0, help="reject poses whose board fit is worse (px)")
+    pv2.add_argument("--monitor", type=int)
+    pv2.add_argument("--max-side", type=int, default=1800)
+    pv2.add_argument("--no-mirror", action="store_true")
+    pv2.set_defaults(func=cmd_pivot)
 
     mo = sub.add_parser("monitors", help="list monitors (for show)")
     mo.set_defaults(func=cmd_monitors)

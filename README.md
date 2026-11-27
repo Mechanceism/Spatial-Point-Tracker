@@ -9,9 +9,13 @@ phases.
 
 ## Status
 
-**Phase 0, feasibility.** Python tools to print boards, calibrate a camera and measure
-how well a target board can be located relative to a reference board. How to run the
-test: [docs/PHASE0.md](docs/PHASE0.md).
+**Phase 0, feasibility.** Python tools to print or display boards, calibrate a camera
+and measure how well a target board can be located relative to a reference board. How
+to run the test: [docs/PHASE0.md](docs/PHASE0.md).
+
+First result (Samsung S23, boards on a flat screen, 29 photos): the mean is within
+0.16 mm of the exact truth. A single photo is about 1.2 mm RMS, mostly in depth,
+and averaging views removes that. Details: [results](docs/PHASE0.md#results-s23--kamvas-pro-13-2026-11-27).
 
 ## Quick start
 

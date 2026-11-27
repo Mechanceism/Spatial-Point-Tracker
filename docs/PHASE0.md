@@ -147,6 +147,59 @@ The report lists every photo's point and these summary lines:
 Optional extra: raise the target board on a block of known height to test the depth
 (z) direction.
 
+## Results: S23 + Kamvas Pro 13 (2026-11-27)
+
+Setup: Samsung S23 main camera, Pro mode, manual focus at ~35-40 cm, 4000 x 2252
+photos. Boards shown on the flat Kamvas Pro 13 (0.153 mm pitch). Reference squares
+24.48 mm, target squares 20.35 mm, exact true distance 175.49 mm.
+
+**Calibration.** 64 photos. The first 39 all had the board in the middle of the frame
+(coverage 33 %, implausible distortion). 25 more aimed at the frame edges and corners
+brought coverage to 96 %. Five of those were steep (~60-70 degree) close-ups whose near
+edge was out of focus (sharpness about 1/5 of the others, per-view errors 1.2-5 px), and
+`--max-view-error 1.0` dropped them. Final: 59 views, RMS 0.54 px, coverage 92 %,
+fx 2705 +/- 2 px. A stricter cut (0.7 px, 49 views) changed the measurement results by
+0.02 mm, so the calibration is stable.
+
+**Measurement.** 29 photos, all used. Every corner of both boards was found in every
+photo.
+
+| | x | y | z | 3D |
+|---|---|---|---|---|
+| Mean of 29 photos minus truth | -0.04 mm | +0.06 mm | -0.14 mm | 0.16 mm |
+| Single-photo spread (1 sd) | 0.30 mm | 0.39 mm | 1.06 mm | 1.15 mm |
+
+- Distance: mean 175.46 mm vs 175.49 mm exact (**-0.03 mm**), sd 0.30 mm.
+- Single-photo 3D error vs truth: RMS 1.16 mm, worst 2.80 mm.
+
+What it means:
+
+- **No bias.** The average is within 0.16 mm of the exact truth, so calibration, pose
+  and frame handling are right. The tooling can measure.
+- **A single photo is about 1-2 mm**, and the error is almost all along the board
+  normal (z), as the synthetic tests predicted.
+- The z error is **random per photo**: it doesn't follow the viewing direction
+  (R² ≈ 0.03 for a linear fit), so it isn't refraction in the screen glass, and
+  averaging views removes it.
+- It was smaller in views tilted under 20 degrees (RMS 0.65 mm) than at 20-30 degrees
+  (1.47 mm) at this ~40 cm distance.
+
+**Design consequences** (these points carry into phase 1):
+
+1. **Average over several viewpoints, not just several frames.** Frames from one
+   position share the same pose error. A capture should combine views from a few
+   camera positions (or two cameras), or the probe should be held while the camera
+   moves.
+2. **Keep reference markers close to the points.** The z error grows with distance
+   from the reference board (this test: 175 mm). Several reference boards spread
+   around the work area beat one far away.
+3. **Calibration capture:** cover the whole frame, and keep tilts moderate at close
+   range so the board stays within the depth of field.
+
+Caveat: a screen is a best case (perfectly flat, exact scale). Printed boards add
+flatness and print-scale error, which the scale check and a rigid backing must keep
+small.
+
 ## What the synthetic tests already show
 
 The tests render boards with a known, perfect camera and check what comes back:

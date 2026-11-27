@@ -25,6 +25,7 @@ from .printable import PAPER_MM, board_page
 from .digitize import DigitizeSession
 from .pivot import solve_pivot_robust
 from .pose import Pose, estimate_pose
+from .prism import DESIGNS, template_pages
 from .probe import ProbeSpec, screen_image, screen_probe
 
 
@@ -508,6 +509,23 @@ def cmd_probe_image(args: argparse.Namespace) -> int:
     print(f"  tip guess (probe frame) {probe.tip.guess} mm")
     print(f"Show it full screen on the phone, then measure {b.squares_y - 2} squares down between inner corners and run:")
     print(f"  python -m spt probe-scale --probe {spec_path} --measured-mm <mm> --squares {b.squares_y - 2}")
+    return 0
+
+
+def cmd_prism_template(args: argparse.Namespace) -> int:
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    names = list(DESIGNS) if args.design == "all" else [args.design]
+    for name in names:
+        d = DESIGNS[name]
+        pages = template_pages(d)
+        pdf, spec = out / f"{d.name}_template.pdf", out / f"{d.name}.prism.json"
+        write_pdf(pdf, pages)
+        d.save(spec)
+        print(f"{d.name}: {d.sides} faces {d.face_w:g} x {d.length:g} mm ({d.across_flats:.2f} mm across flats), "
+              f"markers {d.marker_mm:g} mm, IDs {d.ids[0]}-{d.ids[-1]}, nominal tip {d.tip_mm:g} mm below centre")
+        print(f"  wrote {pdf} ({len(pages)} page{'s' if len(pages) > 1 else ''}) and {spec}")
+    print("Print at 100% / Actual size and check the 100 mm bar.")
     return 0
 
 
@@ -1057,6 +1075,11 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--ball-radius-mm", type=float, default=0.0)
     pi.add_argument("--out", default="output/probe_s23", help="output path without extension")
     pi.set_defaults(func=cmd_probe_image)
+
+    pt = sub.add_parser("prism-template", help="folding template (PDF) + nominal geometry for a prism probe")
+    pt.add_argument("--design", choices=["all", *DESIGNS], default="all")
+    pt.add_argument("--out", default="output/prisms")
+    pt.set_defaults(func=cmd_prism_template)
 
     ps = sub.add_parser("probe-scale", help="set the probe board's measured square size")
     ps.add_argument("--probe", required=True)

@@ -117,3 +117,42 @@ orientation only varied by a median of 12 degrees:
 
 To tell them apart: touch while looking straight down at each crosshair, and with the
 phone turned well differently (sideways, tilted the other way).
+
+## Printed prism probes
+
+The printed probe is a **hexagonal prism** with markers glued on its six side faces
+and the tip **on its axis** (a wand through the middle). Two designs were chosen with
+`scripts/probe_size_sim.py`, a Monte Carlo comparison of marker layouts. Its numbers
+compare designs; real errors run higher.
+
+| Design | Faces | Across flats | Markers | IDs | Use |
+|---|---|---|---|---|---|
+| `hex30` | 6 x 30 mm wide, 60 mm long | 51.96 mm | 2 x 24 mm per face | 60-71 | small work, 0.4-0.8 m |
+| `hex60` | 6 x 60 mm wide, 120 mm long | 103.92 mm | 2 x 48 mm per face | 72-83 | body lines, 1.5-2.5 m, 4K camera |
+
+Why this shape (simulated tip error per frame, before averaging):
+
+- **One small flat marker is unreliable** when it's the only face seen: its tilt is
+  ambiguous (3-8 mm at 0.4-0.8 m for a 30 mm face). A triangle often shows only one
+  face well.
+- **A hexagon always shows 2-3 faces** at good angles: `hex30` gives 0.2-0.4 mm at
+  0.4 m and ~1 mm at 0.8 m from any side, with tips 50-120 mm long.
+- **With the tip on the axis**, twisting the probe doesn't move the tip, so length
+  along the axis (two markers per face) matters more than face width.
+- **Body lines need a 4K camera**: with the NexiGo even 80 mm faces drop out beyond
+  ~1.5-2.5 m. With a 4K camera (UC40M zoomed out, estimated), `hex60` gives 0.6-0.9 mm
+  at 1.5 m, 1.7-2.4 mm at 2.5 m, 3.4-4.6 mm at 3.5 m. 80 mm faces would reach 3.5 m at
+  2.5-3.5 mm.
+
+```
+python -m spt prism-template          # output/prisms/<design>_template.pdf + <design>.prism.json
+python scripts/probe_size_sim.py      # rerun the comparison (e.g. for a redesign)
+```
+
+The templates are letter-size wrap-around strips. Print at 100 %, check the 100 mm
+bar, cut on the solid lines, crease the dashed folds, and wrap printed side out with
+TOP away from the tip. `hex30` is one strip; `hex60` is two strips of three faces on
+two pages. Faces are numbered counter-clockwise seen from the top. The `.prism.json`
+holds the nominal 3D marker corners (origin at the prism centre, z up the axis away
+from the tip, x through face 0); marker-map calibration measures the real layout
+starting from it.

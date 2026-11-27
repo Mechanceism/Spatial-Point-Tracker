@@ -57,4 +57,33 @@ The view shows the **estimated tip as a red circle**, which should sit on the pe
 point and stay there while you rotate, and the pivot as a magenta cross.
 
 Done (long beep) at 60 samples, 25 degrees of rotation spread, and a residual of 1 mm
-or less. `q` saves the tip into the probe file.
+or less. `q` saves the tip into the probe file, and every sampled pose goes to
+`output/pivot_<probe>_<time>.csv`.
+
+First result (S23 + pencil, NexiGo, 2026-11-27): 266 samples, 37 degrees spread, tip at
+(28.6, -71.1, 16.2) mm (the pencil point was ~61 mm above the screen edge, not the
+estimated 50), **residual 1.46 mm RMS**. The residual is mostly the geometry: the tip
+is ~130 mm from the centre of a 60 x 120 mm board, so a 0.5 degree orientation error
+alone moves it ~1.1 mm. Design rule for the printed probe: keep the tip close to the
+markers, and make the marker area at least as large as the tip's distance from it.
+
+## 4. Digitize (and the touch test)
+
+```
+python -m spt show --monitor 3 --pitch-mm 0.153 --layout touch
+python -m spt digitize --probe output/probe_s23.probe.json --calib output/nexigo_n930e_fhd_webcam.calib.json --scene output/scene_touch.json --monitor 1
+```
+
+Every frame with both the reference board and the probe visible gives the tip in the
+reference frame (`tip_ref = inverse(ref) * probe * tip`), shown live as a red circle.
+When the tip has stayed within 1.5 mm RMS for 15 frames, those frames are averaged
+into a point (beep). The tip must then move 10 mm away before the next one.
+
+The `touch` layout shows a smaller reference board and 8 crosshair targets (T1-T8) at
+exact positions, 20-260 mm from the reference. Points within 15 mm of a target are
+matched to it and its error is reported. The error is split into in-plane (x, y) and
+depth (z). Depth has a constant offset, because the tip touches the cover glass a
+little in front of the pixels.
+
+Output: `output/points_<time>.csv` (name, x, y, z, spread, frames, target, error) and
+`..._frames.csv` with every frame's tip and both raw poses.

@@ -13,7 +13,7 @@ import json
 import math
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -21,7 +21,7 @@ import numpy as np
 
 from .boards import BOARDS, REFERENCE, TARGET, BoardSpec, render_raster
 
-LAYOUTS = ("measure", "calib", "reference", "target")
+LAYOUTS = ("measure", "calib", "reference", "target", "touch")
 FORMAT = 1
 
 
@@ -105,6 +105,9 @@ class Scene:
     layout: str
     boards: list[PlacedBoard]
     monitor: str = ""
+    # Touch targets: name -> (x, y) screen position in pixel-edge coordinates (the
+    # point between pixels), so the crosshair centre is exact.
+    targets: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     def board(self, name: str) -> PlacedBoard | None:
         return next((b for b in self.boards if b.spec.name == name), None)
@@ -115,7 +118,29 @@ class Scene:
             raster = render_raster(b.spec, px_per_mm=b.square_px / b.spec.square_mm)
             x, y = b.origin_px
             img[y:y + raster.shape[0], x:x + raster.shape[1]] = raster
+        for name, (x, y) in self.targets.items():
+            arm, gap = 45, 6
+            # 2 px lines centred on the pixel edge at (x, y), with a small gap so the
+            # exact centre stays visible.
+            img[y - 1:y + 1, x - arm:x - gap] = 0
+            img[y - 1:y + 1, x + gap:x + arm] = 0
+            img[y - arm:y - gap, x - 1:x + 1] = 0
+            img[y + gap:y + arm, x - 1:x + 1] = 0
+            cv2.circle(img, (x, y), 28, 0, 2, cv2.LINE_AA)
+            cv2.putText(img, name, (x + 32, y - 32), cv2.FONT_HERSHEY_SIMPLEX, 1.0, 0, 2, cv2.LINE_AA)
         return img
+
+    def target_points(self) -> dict[str, np.ndarray]:
+        """Touch targets in the reference-board frame (mm). They lie on the pixel
+        plane (z = 0); a tip touching the cover glass sits slightly in front of it
+        (negative z)."""
+        ref = self.board("reference")
+        if ref is None:
+            return {}
+        return {
+            name: np.array([(x - ref.origin_px[0]) * self.pitch_mm, (y - ref.origin_px[1]) * self.pitch_mm, 0.0])
+            for name, (x, y) in self.targets.items()
+        }
 
     def truth(self, ref_corner: int = 0, tgt_corner: int = 0) -> np.ndarray | None:
         """Target corner in the reference-board frame (mm), if both are on this screen.
@@ -151,6 +176,8 @@ class Scene:
             ],
             "truth_mm": None if self.truth() is None else self.truth().tolist(),
             "known_mm": self.known_mm(),
+            "targets": {k: list(v) for k, v in self.targets.items()},
+            "target_points_mm": {k: v.tolist() for k, v in self.target_points().items()},
         }
 
     @classmethod
@@ -162,7 +189,8 @@ class Scene:
             PlacedBoard(BOARDS[b["name"]].scaled(b["square_px"] * pitch), b["square_px"], tuple(b["origin_px"]))
             for b in data["boards"]
         ]
-        return cls(data["width_px"], data["height_px"], pitch, data["layout"], boards, data.get("monitor", ""))
+        targets = {k: tuple(v) for k, v in data.get("targets", {}).items()}
+        return cls(data["width_px"], data["height_px"], pitch, data["layout"], boards, data.get("monitor", ""), targets)
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(self.to_json(), indent=2))
@@ -186,7 +214,25 @@ def make_scene(width_px: int, height_px: int, pitch_mm: float, layout: str, moni
         y = (height_px - sq * spec.squares_y) // 2
         return [placed(spec, sq, x, y)]
 
-    if layout == "calib":
+    targets: dict[str, tuple[int, int]] = {}
+    if layout == "touch":
+        # Reference board in the left ~45 % of the screen; touch targets to its right
+        # and above / below it, spread out to test different distances.
+        rsq = int(min((0.45 * width_px - 2 * m) / REFERENCE.squares_x, (0.6 * height_px) / REFERENCE.squares_y))
+        bw, bh = rsq * REFERENCE.squares_x, rsq * REFERENCE.squares_y
+        rx, ry = m, (height_px - bh) // 2
+        boards = [placed(REFERENCE, rsq, rx, ry)]
+        cx = rx + bw // 2
+        above, below = ry // 2, ry + bh + (height_px - ry - bh) // 2
+        right = [round(width_px * f) for f in (0.6, 0.75, 0.9)]
+        rows = [round(height_px * 0.25), round(height_px * 0.75)]
+        names = iter(f"T{i}" for i in range(1, 20))
+        for y in rows:
+            for x in right:
+                targets[next(names)] = (x, y)
+        targets[next(names)] = (cx, above)
+        targets[next(names)] = (cx, below)
+    elif layout == "calib":
         boards = centred(REFERENCE)
     elif layout in ("reference", "target"):
         boards = centred(BOARDS[layout])
@@ -204,7 +250,7 @@ def make_scene(width_px: int, height_px: int, pitch_mm: float, layout: str, moni
             placed(REFERENCE, rsq, m, ry),
             placed(TARGET, tsq, width_px - m - tsq * TARGET.squares_x, ty),
         ]
-    return Scene(width_px, height_px, pitch_mm, layout, boards, monitor)
+    return Scene(width_px, height_px, pitch_mm, layout, boards, monitor, targets)
 
 
 def show(scene: Scene, monitor: Monitor, seconds: float | None = None) -> tuple[int, int]:

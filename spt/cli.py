@@ -22,6 +22,7 @@ from .live_measure import LiveMeasureSession
 from .measure import PointMeasurer, Summary, summarize
 from .pdf import write_pdf
 from .printable import PAPER_MM, board_page
+from .digitize import DigitizeSession
 from .pivot import solve_pivot_robust
 from .pose import Pose, estimate_pose
 from .probe import ProbeSpec, screen_image, screen_probe
@@ -615,6 +616,16 @@ def cmd_pivot(args: argparse.Namespace) -> int:
         print("not enough samples, nothing saved")
         return 1
     result, keep = solve_pivot_robust(poses)
+    # Raw observations: every sampled probe pose, and whether the fit kept it.
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    raw = Path(f"output/pivot_{probe.name}_{stamp}.csv")
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    kept = set(keep)
+    with open(raw, "w", newline="") as f:
+        wr = csv.writer(f)
+        wr.writerow(["sample", "rx", "ry", "rz", "tx", "ty", "tz", "rms_px", "corners", "kept"])
+        for i, p in enumerate(poses):
+            wr.writerow([i, *_pose_row(p), int(i in kept)])
     probe.tip.offset = [round(float(v), 4) for v in result.tip]
     probe.tip.rms_mm = round(result.rms_mm, 4)
     probe.tip.samples = len(keep)
@@ -625,7 +636,151 @@ def cmd_pivot(args: argparse.Namespace) -> int:
     if probe.tip.guess:
         d = result.tip - np.array(probe.tip.guess)
         print(f"  vs hand guess      dx {d[0]:+.1f}  dy {d[1]:+.1f}  dz {d[2]:+.1f} mm")
-    print(f"saved {args.probe}")
+    print(f"saved {args.probe}\nraw samples: {raw}")
+    return 0
+
+
+def _pose_row(p: Pose) -> list[float]:
+    rvec, _ = cv2.Rodrigues(p.R)
+    return [*np.round(rvec.ravel(), 6), *np.round(p.t, 4), round(p.rms_px, 3), p.corners]
+
+
+def _open_window(title: str, monitor: int | None, width: int, height: int, max_side: int) -> None:
+    cv2.namedWindow(title, cv2.WINDOW_NORMAL)
+    if monitor:
+        mon = {m.index: m for m in list_monitors()}.get(monitor)
+        if mon:
+            cv2.moveWindow(title, mon.x + 20, mon.y + 20)
+            cv2.resizeWindow(title, min(mon.width - 40, max_side), min(mon.height - 80, round(max_side * height / width)))
+
+
+def cmd_digitize(args: argparse.Namespace) -> int:
+    probe = ProbeSpec.load(args.probe)
+    calib = CameraCalibration.load(args.calib)
+    targets: dict[str, np.ndarray] = {}
+    ref_square = args.ref_square_mm
+    if args.scene:
+        scene = Scene.load(args.scene)
+        ref_b = scene.board("reference")
+        if ref_b is None:
+            raise SystemExit("the scene has no reference board")
+        ref_square = ref_square or ref_b.spec.square_mm
+        targets = scene.target_points()
+    session = DigitizeSession(calib, REFERENCE.scaled(ref_square), probe, targets,
+                              frames_per_point=args.frames, max_rms_px=args.max_rms)
+    query = args.camera or calib.camera.get("name")
+    cam_info = find_camera(query, list_cameras(with_modes=True, include_virtual=True))
+    width, height = calib.image_size
+    mode = cam_info.best_mode()
+    K, dist = calib.camera_matrix, calib.dist_coeffs
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    points_csv = Path(args.out or f"output/points_{stamp}.csv")
+    frames_csv = points_csv.with_name(points_csv.stem + "_frames.csv")
+
+    live = LiveCamera(cam_info.index, width, height, mode.fps if mode else None, "MJPG").start()
+    window = f"Digitize - {cam_info.name}"
+    _open_window(window, args.monitor, width, height, args.max_side)
+    print(f"{cam_info.name}: touch a point and hold still to capture it. q saves, Esc cancels.")
+    message, message_until, last = "", 0.0, 0
+    colors = {"captured": (0, 220, 0), "holding": (0, 220, 255), "none": (0, 0, 200), "move": (255, 160, 0)}
+    try:
+        while True:
+            frame = live.read(after=last, timeout=5.0)
+            last = frame.number
+            step = session.update(f"f{frame.number}", cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY))
+            if step.state == "captured":
+                p = step.point
+                text = f"captured {p.name}: x {p.xyz[0]:.1f}  y {p.xyz[1]:.1f}  z {p.xyz[2]:.1f} mm (spread {p.spread:.2f})"
+                if p.error is not None:
+                    text += f"   error xy {np.linalg.norm(p.error[:2]):.2f}  z {p.error[2]:+.2f} mm"
+                message, message_until = text, time.perf_counter() + 3.0
+                print("  " + text)
+                _beep(1400, 70)
+
+            out = frame.image.copy()
+            for det, color in zip(session.last_detections, ((0, 255, 0), (255, 200, 0))):
+                if det is not None:
+                    for x, y in det.corners:
+                        cv2.circle(out, (round(x), round(y)), 4, color, -1, cv2.LINE_AA)
+            if step.sample is not None:
+                ref = step.sample.ref
+                if targets:  # targets projected through the reference pose: should sit on the crosshairs
+                    pts = np.array([ref.apply(t) for t in targets.values()])
+                    img_pts, _ = cv2.projectPoints(pts, np.zeros(3), np.zeros(3), K, dist)
+                    for q in img_pts.reshape(-1, 2):
+                        cv2.drawMarker(out, tuple(np.round(q).astype(int)), (255, 0, 255), cv2.MARKER_CROSS, 24, 2)
+                tip_img, _ = cv2.projectPoints(ref.apply(step.sample.tip).reshape(1, 3), np.zeros(3), np.zeros(3), K, dist)
+                cv2.circle(out, tuple(np.round(tip_img.ravel()).astype(int)), 10, (0, 0, 255), 3, cv2.LINE_AA)
+            if not args.no_mirror:
+                out = cv2.flip(out, 1)
+            h, w = out.shape[:2]
+            color = colors.get(step.state)
+            if color:
+                thick = max(6, w // 100)
+                cv2.rectangle(out, (0, 0), (w - 1, h - 1), color, thick)
+                if step.state == "holding":
+                    cv2.rectangle(out, (0, h - thick * 2), (round(w * step.progress), h), color, -1)
+            scale = args.max_side / max(w, h)
+            if scale < 1:
+                out = cv2.resize(out, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            if step.sample is not None:
+                t = step.sample.tip
+                line1 = f"tip  x {t[0]:7.1f}  y {t[1]:7.1f}  z {t[2]:6.1f} mm"
+                if step.nearest:
+                    line1 += f"     nearest {step.nearest[0]}: {step.nearest[1]:.1f} mm"
+            else:
+                line1 = f"tip: {step.reason}"
+            s = session.summary()
+            line2 = f"points {s['points']}"
+            if "xy_rms" in s:
+                line2 += f"   on targets {s['matched']}: error xy RMS {s['xy_rms']:.2f} mm, z mean {s['z_mean']:+.2f} sd {s['z_std']:.2f}"
+            hint = message if time.perf_counter() < message_until else {
+                "none": "show the reference board and the probe to the camera",
+                "moving": "touch a point and hold still",
+                "holding": step.reason or "hold still...",
+                "move": "move to the next point",
+            }.get(step.state, "")
+            out = _with_panel(out, [line1, line2, f"> {hint}",
+                                    "red circle = tip   magenta = targets   q save   Esc cancel"], scale=0.8)
+            cv2.imshow(window, out)
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+                print("cancelled, nothing saved")
+                return 1
+            if key == ord("q"):
+                break
+    finally:
+        live.stop()
+        cv2.destroyAllWindows()
+
+    points_csv.parent.mkdir(parents=True, exist_ok=True)
+    with open(points_csv, "w", newline="") as f:
+        wr = csv.writer(f)
+        wr.writerow(["name", "x_mm", "y_mm", "z_mm", "spread_mm", "frames", "target", "err_x", "err_y", "err_z"])
+        for p in session.points:
+            e = p.error if p.error is not None else [None] * 3
+            wr.writerow([p.name, *np.round(p.xyz, 4), round(p.spread, 4), len(p.samples), p.target or "",
+                         *[None if v is None else round(float(v), 4) for v in e]])
+    with open(frames_csv, "w", newline="") as f:
+        wr = csv.writer(f)
+        wr.writerow(["point", "frame", "tip_x", "tip_y", "tip_z",
+                     "ref_rx", "ref_ry", "ref_rz", "ref_tx", "ref_ty", "ref_tz", "ref_rms_px", "ref_corners",
+                     "probe_rx", "probe_ry", "probe_rz", "probe_tx", "probe_ty", "probe_tz", "probe_rms_px", "probe_corners"])
+        for n, smp in session.samples:
+            wr.writerow([n, smp.frame, *np.round(smp.tip, 4), *_pose_row(smp.ref), *_pose_row(smp.probe)])
+
+    s = session.summary()
+    print(f"\nDigitized {s['points']} points (tip from pivot: residual {probe.tip.rms_mm} mm)")
+    if "xy_rms" in s:
+        print(f"  on targets        {s['matched']}")
+        print(f"  error in plane    RMS {s['xy_rms']:.2f} mm, worst {s['worst_xy']:.2f} mm")
+        print(f"  error in depth    mean {s['z_mean']:+.2f} mm (glass above the pixels + bias), sd {s['z_std']:.2f} mm")
+        print(f"  3D RMS            {s['rms_3d']:.2f} mm ({s['rms_3d_offset_removed']:.2f} mm with the mean depth offset removed)")
+        print("\n  point   err x   err y   err z   spread")
+        for p in session.points:
+            if p.error is not None:
+                print(f"  {p.name:5}  {p.error[0]:+6.2f}  {p.error[1]:+6.2f}  {p.error[2]:+6.2f}   {p.spread:5.2f}")
+    print(f"\nwrote {points_csv} and {frames_csv}")
     return 0
 
 
@@ -906,6 +1061,20 @@ def build_parser() -> argparse.ArgumentParser:
     pv2.add_argument("--max-side", type=int, default=1800)
     pv2.add_argument("--no-mirror", action="store_true")
     pv2.set_defaults(func=cmd_pivot)
+
+    dg = sub.add_parser("digitize", help="capture probe-tip points in the reference frame")
+    dg.add_argument("--probe", required=True, help="calibrated probe file")
+    dg.add_argument("--calib", required=True, help="camera calibration (its camera is used unless --camera)")
+    dg.add_argument("--camera")
+    dg.add_argument("--scene", help="scene from 'show' (reference square size; touch targets to check against)")
+    dg.add_argument("--ref-square-mm", type=float, help="reference square size (printed board)")
+    dg.add_argument("--frames", type=int, default=15, help="frames averaged per point")
+    dg.add_argument("--max-rms", type=float, default=1.0)
+    dg.add_argument("--out", help="points CSV (default output/points_<time>.csv)")
+    dg.add_argument("--monitor", type=int)
+    dg.add_argument("--max-side", type=int, default=1800)
+    dg.add_argument("--no-mirror", action="store_true")
+    dg.set_defaults(func=cmd_digitize)
 
     mo = sub.add_parser("monitors", help="list monitors (for show)")
     mo.set_defaults(func=cmd_monitors)

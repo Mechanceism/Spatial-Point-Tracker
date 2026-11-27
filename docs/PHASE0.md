@@ -19,7 +19,52 @@ pip install -r requirements.txt
 python -m pytest            # synthetic end-to-end tests
 ```
 
-## 2. Print and mount the boards
+## 2a. Or: show the boards on a flat screen (no printer)
+
+A **flat** monitor works instead of paper. It is flatter than a print on a backing,
+and the pixel grid is exact. With both boards on one screen the target's true
+position is known exactly, so the measurement is compared with an exact value instead
+of a steel rule. The pixel pitch doesn't even need to be precise: it scales the boards
+and the true value together, so it cancels out of the comparison.
+
+**Curved monitors can't be used**: a 1800R curve bows a 380 mm board by about 10 mm.
+
+```
+python -m spt monitors                                          # find the monitor number
+python -m spt show --monitor 3 --pitch-mm 0.153 --layout calib     # large reference, for calibration
+python -m spt show --monitor 3 --pitch-mm 0.153 --layout measure   # both boards, exact truth
+```
+
+`--diagonal-in` works instead of `--pitch-mm`. Each `show` writes a scene file
+(`output/scene_<layout>.json`) recording exactly what was shown. Esc closes the
+window. Then use `--scene` instead of square sizes and `--known-mm`:
+
+```
+python -m spt calibrate captures/calib --scene output/scene_calib.json --debug-dir output/calib_debug
+python -m spt measure captures/measure --scene output/scene_measure.json --csv output/measure.csv --debug-dir output/measure_debug
+```
+
+With a scene, `measure` also reports the error of every photo against the exact truth
+in x, y and z.
+
+Things that differ from paper:
+
+- **Reflections:** dim the room lights behind you; a matte screen helps.
+- **Brightness:** about 50-70 %, and expose so the white squares aren't blown out.
+- **Moire** (wavy patterns) appears when screen pixels and camera pixels are about the
+  same size in the photo. If it shows, change the distance slightly or defocus a hair.
+- **Dark bands** come from the backlight flickering. If they show, use a slower
+  shutter (1/60 s or 1/30 s) and brace the phone.
+- The cover glass sits slightly above the pixels, which shifts them a little when seen
+  at an angle (typically a few tenths of a mm). Both boards shift similarly, so this
+  mostly cancels.
+
+Verified on the Kamvas Pro 13 (monitor 3, 0.153 mm pitch): a screenshot matched the
+generated image pixel for pixel, and the detected corners were exactly where the scene
+file says. In the `measure` layout the reference board is 171 x 122 mm, the target
+102 x 81 mm, and the true corner-to-corner distance is 175.49 mm.
+
+## 2b. Print and mount the boards
 
 ```
 python -m spt make-boards              # or --paper a4

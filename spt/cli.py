@@ -13,6 +13,7 @@ import numpy as np
 from .boards import BOARDS, REFERENCE, TARGET, render_raster
 from .calibration import CameraCalibration, calibrate
 from .detect import BoardDetector, draw_detection, image_size, list_images, load_gray, most_common_size
+from .display import LAYOUTS, Scene, list_monitors, make_scene, pitch_from_diagonal, show
 from .measure import PointMeasurer, Summary, summarize
 from .pdf import write_pdf
 from .printable import PAPER_MM, board_page
@@ -33,6 +34,45 @@ def cmd_make_boards(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_monitors(args: argparse.Namespace) -> int:
+    for m in list_monitors():
+        print(f"  {m.index}: {m.width} x {m.height} px at ({m.x}, {m.y}){'  primary' if m.primary else ''}")
+    print("Use the number with: python -m spt show --monitor N --diagonal-in SIZE")
+    return 0
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    monitors = {m.index: m for m in list_monitors()}
+    if args.monitor not in monitors:
+        raise SystemExit(f"no monitor {args.monitor}; available: {sorted(monitors)} (see: python -m spt monitors)")
+    mon = monitors[args.monitor]
+    if args.pitch_mm:
+        pitch = args.pitch_mm
+    elif args.diagonal_in:
+        pitch = pitch_from_diagonal(args.diagonal_in, mon.width, mon.height)
+    else:
+        raise SystemExit("give the screen size: --diagonal-in (e.g. 30) or --pitch-mm")
+    scene = make_scene(mon.width, mon.height, pitch, args.layout, monitor=mon.name)
+    out = Path(args.out or f"output/scene_{args.layout}.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    scene.save(out)
+
+    print(f"Monitor {mon.index}: {mon.width} x {mon.height} px, pixel pitch {pitch:.4f} mm, layout '{args.layout}'")
+    for b in scene.boards:
+        w, h = b.spec.size_mm
+        print(f"  {b.spec.name:9} square {b.square_px} px = {b.spec.square_mm:.2f} mm, board {w:.0f} x {h:.0f} mm")
+    if scene.known_mm() is not None:
+        t = scene.truth()
+        print(f"  truth: target corner 0 at x {t[0]:.2f}  y {t[1]:.2f}  z 0 mm, {scene.known_mm():.2f} mm from reference corner 0")
+    print(f"wrote {out}")
+    print("Showing full screen. Esc or q closes it.")
+    w, h = show(scene, mon, args.seconds)
+    if (w, h) != (mon.width, mon.height):
+        print(f"WARNING: the window was {w} x {h}, not {mon.width} x {mon.height}: the boards were "
+              "scaled and the scene file does not match what was shown.")
+    return 0
+
+
 def _load_views(folder: str):
     """Yield (path, gray) for every image in the folder."""
     paths = list_images(folder)
@@ -43,7 +83,13 @@ def _load_views(folder: str):
 
 
 def cmd_calibrate(args: argparse.Namespace) -> int:
-    spec = BOARDS[args.board].scaled(args.square_mm)
+    square_mm = args.square_mm
+    if args.scene and square_mm is None:
+        placed = Scene.load(args.scene).board(args.board)
+        if placed is None:
+            raise SystemExit(f"the scene file has no {args.board} board")
+        square_mm = placed.spec.square_mm
+    spec = BOARDS[args.board].scaled(square_mm)
     detector = BoardDetector(spec)
     debug = Path(args.debug_dir) if args.debug_dir else None
     if debug:
@@ -115,8 +161,18 @@ def _rms_verdict(rms: float) -> str:
 
 def cmd_measure(args: argparse.Namespace) -> int:
     calib = CameraCalibration.load(args.calib)
-    ref_spec = REFERENCE.scaled(args.ref_square_mm)
-    tgt_spec = TARGET.scaled(args.tgt_square_mm)
+    ref_square, tgt_square, known, truth = args.ref_square_mm, args.tgt_square_mm, args.known_mm, None
+    if args.scene:
+        scene = Scene.load(args.scene)
+        ref_b, tgt_b = scene.board("reference"), scene.board("target")
+        if ref_b is None or tgt_b is None:
+            raise SystemExit("the scene file must show both boards (layout 'measure')")
+        ref_square = ref_square or ref_b.spec.square_mm
+        tgt_square = tgt_square or tgt_b.spec.square_mm
+        truth = scene.truth(args.ref_corner, args.tgt_corner)
+        known = known or scene.known_mm(args.ref_corner, args.tgt_corner)
+    ref_spec = REFERENCE.scaled(ref_square)
+    tgt_spec = TARGET.scaled(tgt_square)
     measurer = PointMeasurer(calib, ref_spec, tgt_spec, args.ref_corner, args.tgt_corner, args.max_rms)
     debug = Path(args.debug_dir) if args.debug_dir else None
     if debug:
@@ -143,9 +199,9 @@ def cmd_measure(args: argparse.Namespace) -> int:
             print(f"  - {name}: {why}")
         raise SystemExit("no photo showed both boards")
 
-    s = summarize(results, args.known_mm)
+    s = summarize(results, known, truth)
     print(f"\nMeasurement: target corner {args.tgt_corner} relative to reference corner {args.ref_corner}")
-    print(f"  squares used    reference {ref_spec.square_mm:g} mm, target {tgt_spec.square_mm:g} mm")
+    print(f"  squares used    reference {ref_spec.square_mm:.3f} mm, target {tgt_spec.square_mm:.3f} mm")
     print(f"  views used      {s.views}   skipped {len(skipped)}   ({elapsed / max(1, s.views + len(skipped)):.2f} s per photo)")
     for name, why in skipped:
         print(f"    - {name}: {why}")
@@ -160,6 +216,12 @@ def cmd_measure(args: argparse.Namespace) -> int:
     print(f"  distance        mean {s.mean_distance:.2f} mm, sd {s.std_distance:.2f}, range {s.min_distance:.2f} - {s.max_distance:.2f}")
     if s.error_mm is not None:
         print(f"  vs known        {s.known_mm:.2f} mm -> error {s.error_mm:+.2f} mm")
+    if s.truth is not None:
+        tx, ty, tz = s.truth
+        ex, ey, ez = s.mean_error
+        print(f"  truth           x {tx:.2f}  y {ty:.2f}  z {tz:.2f} mm (exact, from the screen layout)")
+        print(f"  mean - truth    x {ex:+.2f}  y {ey:+.2f}  z {ez:+.2f} mm")
+        print(f"  per-view error  RMS {s.rms_error_3d:.2f} mm, worst {s.max_error_3d:.2f} mm")
     print("\n  " + _measure_verdict(s, args.target_mm))
 
     if args.csv:
@@ -181,6 +243,9 @@ def _measure_verdict(s: Summary, target_mm: float) -> str:
     if s.error_mm is not None:
         parts.append(f"Distance error {abs(s.error_mm):.2f} mm: "
                      + ("within target." if abs(s.error_mm) <= target_mm else "OUTSIDE target (check print scale / --square-mm first)."))
+    if s.rms_error_3d is not None:
+        parts.append(f"Single-photo 3D error (RMS) {s.rms_error_3d:.2f} mm: "
+                     + ("within target." if s.rms_error_3d <= target_mm else "OUTSIDE target."))
     return "\n  ".join(parts)
 
 
@@ -193,10 +258,25 @@ def build_parser() -> argparse.ArgumentParser:
     mb.add_argument("--out", default="output/boards")
     mb.set_defaults(func=cmd_make_boards)
 
+    mo = sub.add_parser("monitors", help="list monitors (for show)")
+    mo.set_defaults(func=cmd_monitors)
+
+    sh = sub.add_parser("show", help="show boards full screen on a monitor instead of printing")
+    sh.add_argument("--monitor", type=int, required=True, help="monitor number from 'monitors'")
+    sh.add_argument("--layout", choices=LAYOUTS, default="measure",
+                    help="measure: both boards (exact truth); calib: large reference; reference/target: one board")
+    size = sh.add_mutually_exclusive_group()
+    size.add_argument("--diagonal-in", type=float, help="visible screen diagonal in inches")
+    size.add_argument("--pitch-mm", type=float, help="pixel pitch in mm")
+    sh.add_argument("--out", help="scene file (default output/scene_<layout>.json)")
+    sh.add_argument("--seconds", type=float, help="close automatically after this long")
+    sh.set_defaults(func=cmd_show)
+
     cal = sub.add_parser("calibrate", help="calibrate a camera from photos of one board")
     cal.add_argument("photos", help="folder of calibration photos")
     cal.add_argument("--board", choices=sorted(BOARDS), default="reference")
     cal.add_argument("--square-mm", type=float, help="measured printed square size (default: nominal)")
+    cal.add_argument("--scene", help="scene file from 'show' (sets the square size)")
     cal.add_argument("--out", default="output/camera.calib.json")
     cal.add_argument("--rational", action="store_true", help="8-coefficient distortion model (wide lenses)")
     cal.add_argument("--max-view-error", type=float, help="drop views above this error (px) and recalibrate once")
@@ -211,6 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     me.add_argument("--ref-corner", type=int, default=0)
     me.add_argument("--tgt-corner", type=int, default=0)
     me.add_argument("--known-mm", type=float, help="hand-measured corner-to-corner distance")
+    me.add_argument("--scene", help="scene file from 'show --layout measure': exact truth and square sizes")
     me.add_argument("--target-mm", type=float, default=2.0, help="accuracy goal (default 2 mm)")
     me.add_argument("--max-rms", type=float, default=1.0, help="reject views whose board fit is worse (px)")
     me.add_argument("--csv", help="write per-view results here")

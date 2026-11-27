@@ -26,6 +26,9 @@ python -m spt calibrate captures/calib --square-mm 29.97
 python -m spt measure captures/measure --ref-square-mm 29.97 --tgt-square-mm 24.98 --known-mm 301.5
 ```
 
+No printer? Show the boards on a flat monitor (`python -m spt show ...`). The true
+position is then known exactly; see [docs/PHASE0.md](docs/PHASE0.md#2a-or-show-the-boards-on-a-flat-screen-no-printer).
+
 ## Layout
 
 | Path | Contents |
@@ -36,6 +39,7 @@ python -m spt measure captures/measure --ref-square-mm 29.97 --tgt-square-mm 24.
 | `spt/calibration.py` | Camera calibration and its JSON file |
 | `spt/pose.py` | Board pose and rigid transforms |
 | `spt/measure.py` | Phase 0 measurement and statistics |
+| `spt/display.py` | Boards shown full screen on a monitor, with exact truth |
 | `spt/cli.py` | `python -m spt ...` commands |
 | `tests/` | Synthetic-image end-to-end tests |
 

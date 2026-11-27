@@ -41,6 +41,11 @@ class Summary:
     max_distance: float
     known_mm: float | None
     error_mm: float | None
+    # Only when the true point is known exactly (boards shown on one screen).
+    truth: np.ndarray | None = None
+    mean_error: np.ndarray | None = None  # mean point - truth
+    rms_error_3d: float | None = None  # per-view distance from truth, RMS
+    max_error_3d: float | None = None
 
 
 class PointMeasurer:
@@ -87,7 +92,9 @@ class PointMeasurer:
         )
 
 
-def summarize(results: list[ViewResult], known_mm: float | None = None) -> Summary:
+def summarize(
+    results: list[ViewResult], known_mm: float | None = None, truth: np.ndarray | None = None
+) -> Summary:
     if not results:
         raise ValueError("no usable views")
     pts = np.array([r.point for r in results])
@@ -96,7 +103,18 @@ def summarize(results: list[ViewResult], known_mm: float | None = None) -> Summa
     dev = np.linalg.norm(pts - mean, axis=1)
     ddof = 1 if len(results) > 1 else 0
     mean_distance = float(dists.mean())
+    truth_fields = {}
+    if truth is not None:
+        truth = np.asarray(truth, dtype=np.float64)
+        err = np.linalg.norm(pts - truth, axis=1)
+        truth_fields = dict(
+            truth=truth,
+            mean_error=mean - truth,
+            rms_error_3d=float(np.sqrt(np.mean(err**2))),
+            max_error_3d=float(err.max()),
+        )
     return Summary(
+        **truth_fields,
         views=len(results),
         mean_point=mean,
         std_xyz=pts.std(axis=0, ddof=ddof),

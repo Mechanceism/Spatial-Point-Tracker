@@ -93,3 +93,15 @@ def test_hints_follow_progress(detections):
     guide = GuidedCalibrator(REFERENCE, SIZE)
     assert "RED" in guide.hint()
     assert not guide.done()
+
+
+def test_config_for_another_stream_keeps_the_same_steadiness():
+    from spt.guided import GuideConfig
+    base = GuideConfig()
+    same = base.for_stream(1920, 30)
+    assert same.still_px == base.still_px and same.still_frames == base.still_frames
+    phone = base.for_stream(3840, 15)  # 4K at 15 detections/s
+    assert phone.still_px == pytest.approx(4 * base.still_px)
+    assert phone.rearm_px == pytest.approx(4 * base.rearm_px)
+    assert phone.still_frames == 3  # still 0.2 s of holding
+    assert base.for_stream(3840, 5).still_frames == 2  # never fewer than two frames

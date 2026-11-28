@@ -85,6 +85,9 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+PHONE_CALIB_FPS = 15.0  # detections/s asked of the phone while calibrating (one lens)
+
+
 def _gray(frame):
     """What to detect in: the phone's own detections when the frame came from the
     phone (it detects at full resolution), otherwise the grayscale image."""
@@ -290,7 +293,7 @@ def cmd_calibrate_live(args: argparse.Namespace) -> int:
         square_mm = placed.spec.square_mm if placed else None
     spec = REFERENCE.scaled(square_mm)
     if phone:
-        live = PhoneCamera(args.camera, focus="lock").start()
+        live = PhoneCamera(args.camera, focus="lock", focus_on=spec.name, max_fps=PHONE_CALIB_FPS).start()
         cam_name = f"{live.name} ({live.role})"
     else:
         live = LiveCamera(cam_info.index, width, height, args.fps or (mode.fps if mode else None), args.fourcc).start()
@@ -301,6 +304,8 @@ def cmd_calibrate_live(args: argparse.Namespace) -> int:
     first = live.read(timeout=8.0)
     size = (first.image.shape[1], first.image.shape[0])
     cfg = GuideConfig(min_views=args.min_views, target_coverage=args.coverage, max_rms=args.max_rms)
+    if phone:  # 4K at ~15 detections/s: same steadiness as a webcam at 1080p / 30 fps
+        cfg = cfg.for_stream(size[0], PHONE_CALIB_FPS)
     guide = GuidedCalibrator(spec, size, cfg)
     frames: list = []  # images, or the phone's detections
 

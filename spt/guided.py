@@ -14,7 +14,7 @@ synthetic frames; spt.cli runs it on a live camera.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import cv2
 import numpy as np
@@ -38,6 +38,17 @@ class GuideConfig:
     min_views: int = 15
     target_coverage: float = 0.8
     max_rms: float = 0.6
+
+    def for_stream(self, width: int, fps: float) -> "GuideConfig":
+        """The same steadiness for another image width and frame rate.
+
+        The pixel thresholds above are per frame at 1920 px wide and 30 fps (the
+        webcams). Motion per frame grows with resolution and with the time between
+        frames, and the hold should last the same time (6 frames = 0.2 s at 30 fps).
+        """
+        k = (width / 1920.0) * (30.0 / fps)
+        return replace(self, still_px=self.still_px * k, rearm_px=self.rearm_px * k,
+                       still_frames=max(2, round(self.still_frames * fps / 30.0)))
     min_tilt_deg: float = 20.0  # need views at least this tilted, both left/right and up/down
 
 

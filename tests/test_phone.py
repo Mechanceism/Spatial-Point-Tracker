@@ -203,7 +203,7 @@ class FakeApp:
                                              "jpeg": base64.b64encode(jpg.tobytes()).decode()})
                             for t in range(6):  # spaced out like a camera
                                 self.send(conn, frame_msg("2", t=t))  # another lens: ignored
-                                self.send(conn, frame_msg("5", t=t))
+                                self.send(conn, frame_msg("5", ids=tuple(range(8)), t=t))
                                 time.sleep(0.05)
             except OSError:
                 pass
@@ -216,7 +216,7 @@ def test_phone_camera_reads_one_lens_with_detections_and_picture():
     assert cam.lens == "5" and cam.role == "main" and cam.name == "phone:5"
     first = cam.read(timeout=3)
     assert first.observed.size == (3840, 2160)
-    assert first.observed.boards["reference"].ids.tolist() == [0, 1, 2]
+    assert first.observed.boards["reference"].ids.tolist() == list(range(8))
     assert first.image.shape == (2160, 3840, 3)  # preview scaled up to the stream size
     assert 190 < first.image.mean() < 210  # it is the phone's picture, not the blank fallback
     assert wait_for(lambda: cam._number >= 3)
@@ -242,3 +242,23 @@ def test_phone_camera_sets_focus(focus, expected):
     assert wait_for(lambda: expected in app.commands)
     assert wait_for(lambda: cam._number >= 6)
     cam.stop()
+
+
+def test_focus_lock_waits_for_the_board():
+    app = FakeApp()  # its frames show the reference board, not the target
+    cam = PhoneCamera("phone:main", link=PhoneLink(port=app.port, forward=False, log=lambda s: None),
+                      log=lambda s: None, focus="lock", focus_settle=0.1, focus_on="reference").start(timeout=3)
+    assert wait_for(lambda: {"cmd": "lock_focus"} in app.commands)
+    cmds = [c["cmd"] for c in app.commands]
+    assert cmds.index("unlock_focus") < cmds.index("lock_focus")  # autofocus runs fresh first
+    assert wait_for(lambda: cam._number >= 6)
+    cam.stop()
+    cam2 = PhoneCamera("phone:main", link=PhoneLink(port=FakeApp().port, forward=False, log=lambda s: None),
+                       log=lambda s: None, focus="lock", focus_on="target")
+    cam2._wait_for_board  # noqa: B018 - exists
+    with pytest.raises(TimeoutError, match="target"):
+        cam2.link.connect(timeout=3)
+        cam2.lens = "5"
+        cam2.link.set_streams(["5"])
+        cam2._wait_for_board("target", 0.1, timeout=0.5)
+    cam2.link.close()

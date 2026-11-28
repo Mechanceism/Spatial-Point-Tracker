@@ -313,7 +313,9 @@ class PhoneCamera:
 
     ``focus``: None leaves the lens as it is; ``"lock"`` lets autofocus settle and then
     locks it (calibration); a number fixes the focus at that many diopters (the
-    distance stored in a calibration). ``focus_d`` is where the lens is focused.
+    distance stored in a calibration). With ``focus_on`` (a board name), "lock" waits
+    until that board has been in view for ``focus_settle`` seconds, so autofocus is on
+    the board and not on the room behind it. ``focus_d`` is where the lens is focused.
     """
 
     fourcc = "phone"
@@ -321,10 +323,11 @@ class PhoneCamera:
     def __init__(self, camera: str = "phone:main", port: int = DEFAULT_PORT, max_fps: float = 10.0,
                  preview_fps: float = 5.0, preview_width: int = 960, boards: list[BoardSpec] | None = None,
                  log: Callable[[str], None] = print, link: PhoneLink | None = None,
-                 focus: str | float | None = None, focus_settle: float = 2.0):
+                 focus: str | float | None = None, focus_settle: float = 2.0, focus_on: str | None = None):
         self.query = camera.split(":", 1)[1] if ":" in camera else "main"
         self.focus = focus
         self.focus_settle = focus_settle
+        self.focus_on = focus_on
         self.max_fps = max_fps
         self.preview_fps = preview_fps
         self.preview_width = preview_width
@@ -370,12 +373,36 @@ class PhoneCamera:
     def focus_locked(self) -> bool:
         return bool(self._latest is not None and self._latest.focus_locked)
 
+    def _wait_for_board(self, board: str, seconds: float, timeout: float = 180.0, min_corners: int = 6) -> None:
+        self.log(f"point the phone at the {board} board at your working distance and hold it there: "
+                 f"focus locks once the board has been in view for {seconds:g} s")
+        seen_since = None
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if self.link.error:
+                raise TimeoutError(f"phone link lost: {self.link.error}")
+            f = self._latest
+            det = f.boards.get(board) if f is not None else None
+            now = time.monotonic()
+            if det is not None and len(det) >= min_corners and now - f.received < 0.5:
+                seen_since = seen_since or now
+                if now - seen_since >= seconds:
+                    return
+            else:
+                seen_since = None
+            time.sleep(0.05)
+        raise TimeoutError(f"the {board} board was not seen steadily within {timeout:g} s")
+
     def _apply_focus(self) -> None:
         if self.focus is None or self.focus_d is None:  # nothing asked, or a fixed-focus lens
             return
         if self.focus == "lock":
-            self.log(f"letting autofocus settle for {self.focus_settle:g} s, then locking it...")
-            time.sleep(self.focus_settle)
+            self.link.unlock_focus()
+            if self.focus_on:
+                self._wait_for_board(self.focus_on, self.focus_settle)
+            else:
+                self.log(f"letting autofocus settle for {self.focus_settle:g} s, then locking it...")
+                time.sleep(self.focus_settle)
             self.link.lock_focus()
         else:
             self.link.set_focus(self.lens, float(self.focus))

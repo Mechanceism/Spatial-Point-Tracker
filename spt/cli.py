@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 import threading
 import time
@@ -18,6 +19,7 @@ from .cameras import FpsMeter, LiveCamera, find_camera, list_cameras, sharpness
 from .detect import BoardDetector, draw_detection, image_size, list_images, load_gray, most_common_size
 from .display import LAYOUTS, Scene, list_monitors, make_scene, pitch_from_diagonal, show
 from .guided import GuideConfig, GuidedCalibrator
+from .phone import PhoneCamera, is_phone
 from .live_measure import LiveMeasureSession
 from .measure import PointMeasurer, Summary, summarize
 from .pdf import write_pdf
@@ -81,6 +83,13 @@ def cmd_show(args: argparse.Namespace) -> int:
         print(f"WARNING: the window was {w} x {h}, not {mon.width} x {mon.height}: the boards were "
               "scaled and the scene file does not match what was shown.")
     return 0
+
+
+def _gray(frame):
+    """What to detect in: the phone's own detections when the frame came from the
+    phone (it detects at full resolution), otherwise the grayscale image."""
+    observed = getattr(frame, "observed", None)
+    return observed if observed is not None else cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY)
 
 
 def cmd_cameras(args: argparse.Namespace) -> int:
@@ -262,47 +271,57 @@ def _draw_guide(image: np.ndarray, guide: GuidedCalibrator, det, step, mirror: b
 
 
 def cmd_calibrate_live(args: argparse.Namespace) -> int:
-    cam_info = find_camera(args.camera, list_cameras(with_modes=True, include_virtual=True))
-    mode = cam_info.best_mode()
-    if args.mode:
-        width, height = (int(v) for v in args.mode.lower().split("x"))
+    phone = is_phone(args.camera)
+    if phone:
+        cam_info = None
+        cam_name = args.camera
+        args.no_mirror = True  # the phone looks away from you: no mirror view
     else:
-        width, height = (mode.width, mode.height) if mode else (None, None)
+        cam_info = find_camera(args.camera, list_cameras(with_modes=True, include_virtual=True))
+        cam_name = cam_info.name
+        mode = cam_info.best_mode()
+        if args.mode:
+            width, height = (int(v) for v in args.mode.lower().split("x"))
+        else:
+            width, height = (mode.width, mode.height) if mode else (None, None)
     square_mm = None
     if args.scene:
         placed = Scene.load(args.scene).board("reference")
         square_mm = placed.spec.square_mm if placed else None
     spec = REFERENCE.scaled(square_mm)
-    safe = "".join(ch if ch.isalnum() else "_" for ch in cam_info.name).strip("_").lower()
+    if phone:
+        live = PhoneCamera(args.camera, focus="lock").start()
+        cam_name = f"{live.name} ({live.role})"
+    else:
+        live = LiveCamera(cam_info.index, width, height, args.fps or (mode.fps if mode else None), args.fourcc).start()
+    safe = "".join(ch if ch.isalnum() else "_" for ch in (live.name if phone else cam_name)).strip("_").lower()
     stamp = time.strftime("%Y%m%d_%H%M%S")
     frames_dir = Path(args.frames_dir or f"captures/calib_live/{safe}_{stamp}")
     out = Path(args.out or f"output/{safe}.calib.json")
-
-    live = LiveCamera(cam_info.index, width, height, args.fps or (mode.fps if mode else None), args.fourcc).start()
     first = live.read(timeout=8.0)
     size = (first.image.shape[1], first.image.shape[0])
     cfg = GuideConfig(min_views=args.min_views, target_coverage=args.coverage, max_rms=args.max_rms)
     guide = GuidedCalibrator(spec, size, cfg)
-    frames: list[np.ndarray] = []
+    frames: list = []  # images, or the phone's detections
 
-    window = f"Guided calibration - {cam_info.name}"
+    window = f"Guided calibration - {cam_name}"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     if args.monitor:
         mon = {m.index: m for m in list_monitors()}.get(args.monitor)
         if mon:
             cv2.moveWindow(window, mon.x + 20, mon.y + 20)
             cv2.resizeWindow(window, min(mon.width - 40, args.max_side), min(mon.height - 80, round(args.max_side * size[1] / size[0])))
-    print(f"{cam_info.name}: {size[0]}x{size[1]} {live.fourcc}. Hold the board in front of the camera; q saves and quits.")
+    print(f"{cam_name}: {size[0]}x{size[1]} {live.fourcc}. Hold the board in front of the camera; q saves and quits.")
     message, message_until, was_done = "", 0.0, False
     last = 0
     try:
         while True:
             frame = live.read(after=last, timeout=5.0)
             last = frame.number
-            det = guide.detector.detect(cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY))
+            det = guide.detector.detect(_gray(frame))
             step = guide.update(det, frame.time)
             if step.state == "captured":
-                frames.append(frame.image.copy())
+                frames.append(det if phone else frame.image.copy())
                 _beep(1400, 70)
             elif step.state == "rejected":
                 _beep(400, 200)
@@ -338,16 +357,27 @@ def cmd_calibrate_live(args: argparse.Namespace) -> int:
     # never stored), so frames and views correspond one to one.
     assert len(frames) == len(guide.views)
     frames_dir.mkdir(parents=True, exist_ok=True)
-    for i, image in enumerate(frames):
-        cv2.imwrite(str(frames_dir / f"view{i:02d}.png"), image)
+    if phone:  # the phone's detections are the raw observations
+        views = [{"view": i, "ids": d.ids.tolist(), "corners": d.corners.round(3).tolist()} for i, d in enumerate(frames)]
+        (frames_dir / "views.json").write_text(json.dumps(
+            {"camera": live.name, "role": live.role, "size": list(size), "board": spec.name,
+             "square_mm": spec.square_mm, "views": views}, indent=1))
+    else:
+        for i, image in enumerate(frames):
+            cv2.imwrite(str(frames_dir / f"view{i:02d}.png"), image)
     n = len(frames)
     calib = guide.calibration
-    calib.camera = {"name": cam_info.name, "width": size[0], "height": size[1], "fourcc": live.fourcc}
+    calib.camera = {"name": live.name if phone else cam_name, "width": size[0], "height": size[1], "fourcc": live.fourcc}
+    if phone:
+        calib.camera["role"] = live.role
+        if live.focus_d is not None:  # the calibration holds at this focus only
+            calib.camera["focus_d"] = round(float(live.focus_d), 4)
     out.parent.mkdir(parents=True, exist_ok=True)
     calib.save(out)
     _print_calibration(calib, spec, size, [], 0.0)
     print(f"  done criteria   {'met' if guide.done() else 'NOT met (saved anyway)'}")
-    print(f"\nwrote {out}\nsaved {n} frames to {frames_dir} (python -m spt calibrate {frames_dir} redoes it offline)")
+    print(f"\nwrote {out}\nsaved {n} {'detections' if phone else 'frames'} to {frames_dir}"
+          + ("" if phone else f" (python -m spt calibrate {frames_dir} redoes it offline)"))
     return 0
 
 
@@ -360,23 +390,31 @@ def cmd_measure_live(args: argparse.Namespace) -> int:
     query = args.camera or calib.camera.get("name")
     if not query:
         raise SystemExit("give --camera (the calibration file doesn't name one)")
-    cam_info = find_camera(query, list_cameras(with_modes=True, include_virtual=True))
+    phone = is_phone(query)
     width, height = calib.image_size
-    mode = cam_info.best_mode()
+    if phone:
+        args.no_mirror = True
+    else:
+        cam_info = find_camera(query, list_cameras(with_modes=True, include_virtual=True))
+        mode = cam_info.best_mode()
     measurer = PointMeasurer(calib, ref_b.spec, tgt_b.spec, max_rms_px=args.max_rms)
     session = LiveMeasureSession(measurer, scene.truth(), frames_per_capture=args.frames)
-    safe = "".join(ch if ch.isalnum() else "_" for ch in cam_info.name).strip("_").lower()
+    cam_name = query if phone else cam_info.name
+    safe = "".join(ch if ch.isalnum() else "_" for ch in cam_name).strip("_").lower()
     stamp = time.strftime("%Y%m%d_%H%M%S")
     frames_dir = Path(f"captures/measure_live/{safe}_{stamp}")
     csv_path = Path(args.csv or f"output/measure_live_{safe}_{stamp}.csv")
 
-    live = LiveCamera(cam_info.index, width, height, args.fps or (mode.fps if mode else None), args.fourcc).start()
+    if phone:
+        live = PhoneCamera(query, focus=calib.camera.get("focus_d")).start()
+    else:
+        live = LiveCamera(cam_info.index, width, height, args.fps or (mode.fps if mode else None), args.fourcc).start()
     first = live.read(timeout=8.0)
     if (first.image.shape[1], first.image.shape[0]) != tuple(calib.image_size):
         live.stop()
         raise SystemExit(f"camera gives {first.image.shape[1]}x{first.image.shape[0]}, calibration is for "
                          f"{calib.image_size[0]}x{calib.image_size[1]}")
-    window = f"Live measurement - {cam_info.name}"
+    window = f"Live measurement - {cam_name}"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     if args.monitor:
         mon = {m.index: m for m in list_monitors()}.get(args.monitor)
@@ -384,14 +422,14 @@ def cmd_measure_live(args: argparse.Namespace) -> int:
             cv2.moveWindow(window, mon.x + 20, mon.y + 20)
             cv2.resizeWindow(window, min(mon.width - 40, args.max_side), min(mon.height - 80, round(args.max_side * height / width)))
     truth_mm = scene.known_mm()
-    print(f"{cam_info.name}: {width}x{height} {live.fourcc}. Truth: {truth_mm:.2f} mm. q finishes, Esc quits.")
+    print(f"{cam_name}: {width}x{height} {live.fourcc}. Truth: {truth_mm:.2f} mm. q finishes, Esc quits.")
     last, message, message_until = 0, "", 0.0
     colors = {"captured": (0, 220, 0), "collecting": (0, 220, 255), "none": (0, 0, 200), "move": (255, 160, 0)}
     try:
         while True:
             frame = live.read(after=last, timeout=5.0)
             last = frame.number
-            gray = cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY)
+            gray = _gray(frame)
             step = session.update(f"f{frame.number}", gray)
             if step.state == "captured":
                 c = step.capture
@@ -555,21 +593,29 @@ def cmd_pivot(args: argparse.Namespace) -> int:
     probe = ProbeSpec.load(args.probe)
     calib = CameraCalibration.load(args.calib)
     query = args.camera or calib.camera.get("name")
-    cam_info = find_camera(query, list_cameras(with_modes=True, include_virtual=True))
+    phone = is_phone(query)
     width, height = calib.image_size
-    mode = cam_info.best_mode()
+    if phone:
+        cam_name = query
+    else:
+        cam_info = find_camera(query, list_cameras(with_modes=True, include_virtual=True))
+        cam_name = cam_info.name
+        mode = cam_info.best_mode()
     detector = BoardDetector(probe.board)
     K, dist = calib.camera_matrix, calib.dist_coeffs
 
-    live = LiveCamera(cam_info.index, width, height, mode.fps if mode else None, "MJPG").start()
-    window = f"Pivot calibration - {cam_info.name}"
+    if phone:
+        live = PhoneCamera(query, boards=[REFERENCE, probe.board], focus=calib.camera.get("focus_d")).start()
+    else:
+        live = LiveCamera(cam_info.index, width, height, mode.fps if mode else None, "MJPG").start()
+    window = f"Pivot calibration - {cam_name}"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     if args.monitor:
         mon = {m.index: m for m in list_monitors()}.get(args.monitor)
         if mon:
             cv2.moveWindow(window, mon.x + 20, mon.y + 20)
             cv2.resizeWindow(window, min(mon.width - 40, args.max_side), min(mon.height - 80, round(args.max_side * height / width)))
-    print(f"{cam_info.name}: put the tip in a small dent and rotate the probe around it. q saves, Esc cancels.")
+    print(f"{cam_name}: put the tip in a small dent and rotate the probe around it. q saves, Esc cancels.")
     poses: list[Pose] = []
     prev: Pose | None = None
     result, keep, was_done = None, [], False
@@ -578,7 +624,7 @@ def cmd_pivot(args: argparse.Namespace) -> int:
         while True:
             frame = live.read(after=last, timeout=5.0)
             last = frame.number
-            det = detector.detect(cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY))
+            det = detector.detect(_gray(frame))
             pose = estimate_pose(detector, det, calib, min_corners=args.min_corners)
             state = "none"
             if pose is not None and pose.rms_px <= args.max_rms:
@@ -697,25 +743,35 @@ def cmd_digitize(args: argparse.Namespace) -> int:
     session = DigitizeSession(calib, REFERENCE.scaled(ref_square), probe, targets,
                               frames_per_point=args.frames, max_rms_px=args.max_rms)
     query = args.camera or calib.camera.get("name")
-    cam_info = find_camera(query, list_cameras(with_modes=True, include_virtual=True))
+    phone = is_phone(query)
     width, height = calib.image_size
-    mode = cam_info.best_mode()
+    if phone:
+        cam_name = query
+        args.no_mirror = True
+    else:
+        cam_info = find_camera(query, list_cameras(with_modes=True, include_virtual=True))
+        cam_name = cam_info.name
+        mode = cam_info.best_mode()
     K, dist = calib.camera_matrix, calib.dist_coeffs
     stamp = time.strftime("%Y%m%d_%H%M%S")
     points_csv = Path(args.out or f"output/points_{stamp}.csv")
     frames_csv = points_csv.with_name(points_csv.stem + "_frames.csv")
 
-    live = LiveCamera(cam_info.index, width, height, mode.fps if mode else None, "MJPG").start()
-    window = f"Digitize - {cam_info.name}"
+    if phone:
+        live = PhoneCamera(query, boards=[REFERENCE.scaled(ref_square), probe.board],
+                           focus=calib.camera.get("focus_d")).start()
+    else:
+        live = LiveCamera(cam_info.index, width, height, mode.fps if mode else None, "MJPG").start()
+    window = f"Digitize - {cam_name}"
     _open_window(window, args.monitor, width, height, args.max_side)
-    print(f"{cam_info.name}: touch a point and hold still to capture it. Points save as you go; q or Esc finishes.")
+    print(f"{cam_name}: touch a point and hold still to capture it. Points save as you go; q or Esc finishes.")
     message, message_until, last = "", 0.0, 0
     colors = {"captured": (0, 220, 0), "holding": (0, 220, 255), "none": (0, 0, 200), "move": (255, 160, 0)}
     try:
         while True:
             frame = live.read(after=last, timeout=5.0)
             last = frame.number
-            step = session.update(f"f{frame.number}", cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY))
+            step = session.update(f"f{frame.number}", _gray(frame))
             if step.state == "captured":
                 p = step.point
                 text = f"captured {p.name}: x {p.xyz[0]:.1f}  y {p.xyz[1]:.1f}  z {p.xyz[2]:.1f} mm (spread {p.spread:.2f})"
@@ -1034,6 +1090,11 @@ def cmd_phone(args: argparse.Namespace) -> int:
         print(f"  autofocus lenses {hello.get('autofocus')}, per-lens focus: {hello.get('per_lens_focus')}")
         link.send_boards(list(BOARDS.values()))
         print(f"  boards sent: {', '.join(BOARDS)}" + (f"; recording to {record}" if record else ""))
+        if args.lenses:
+            from .phone import resolve_lens
+            ids = [resolve_lens(hello, q) for q in args.lenses.split(",")]
+            link.set_streams(ids)
+            print(f"  streaming only lens(es) {', '.join(ids)} (the phone restarts its camera)")
         if args.max_fps is not None or args.min_marker_px is not None or args.aruco3 is not None:
             link.set_detector(args.max_fps, args.aruco3, args.min_marker_px)
         print(f"  detector (before changes): {hello.get('detector')}")
@@ -1071,6 +1132,11 @@ def cmd_phone(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if args.lenses:
+            try:
+                link.set_streams(None)  # give the Live screen all lenses back
+            except OSError:
+                pass
         link.close()
     return 0
 
@@ -1102,7 +1168,7 @@ def build_parser() -> argparse.ArgumentParser:
     pv.set_defaults(func=cmd_preview)
 
     cl = sub.add_parser("calibrate-live", help="guided calibration: auto-captures while you move the board")
-    cl.add_argument("--camera", required=True, help="index or part of the name (see 'cameras')")
+    cl.add_argument("--camera", required=True, help="index or part of the name (see 'cameras') ('phone:main' / 'phone:ultrawide' / 'phone:tele' = the SPT Camera app over USB)")
     cl.add_argument("--mode", help="WIDTHxHEIGHT (default: largest MJPG mode at 15+ fps)")
     cl.add_argument("--fps", type=float)
     cl.add_argument("--fourcc", default="MJPG")
@@ -1120,7 +1186,7 @@ def build_parser() -> argparse.ArgumentParser:
     ml = sub.add_parser("measure-live", help="live measurement test against the exact screen truth")
     ml.add_argument("--calib", required=True, help="calibration file (its camera is used unless --camera)")
     ml.add_argument("--scene", default="output/scene_measure.json", help="scene from 'show --layout measure'")
-    ml.add_argument("--camera", help="index or part of the name (default: from the calibration)")
+    ml.add_argument("--camera", help="index or part of the name (default: from the calibration) ('phone:main' / 'phone:ultrawide' / 'phone:tele' = the SPT Camera app over USB)")
     ml.add_argument("--fps", type=float)
     ml.add_argument("--fourcc", default="MJPG")
     ml.add_argument("--frames", type=int, default=15, help="frames averaged per capture")
@@ -1158,7 +1224,7 @@ def build_parser() -> argparse.ArgumentParser:
     pv2 = sub.add_parser("pivot", help="pivot calibration: find the probe tip by rotating around it")
     pv2.add_argument("--probe", required=True, help="probe file (from probe-image)")
     pv2.add_argument("--calib", required=True, help="camera calibration (its camera is used unless --camera)")
-    pv2.add_argument("--camera")
+    pv2.add_argument("--camera", help="default: from the calibration;('phone:main' / 'phone:ultrawide' / 'phone:tele' = the SPT Camera app over USB)")
     pv2.add_argument("--samples", type=int, default=60, help="samples needed")
     pv2.add_argument("--spread", type=float, default=25.0, help="rotation spread needed (deg)")
     pv2.add_argument("--max-residual", type=float, default=1.0, help="residual goal (mm)")
@@ -1174,7 +1240,7 @@ def build_parser() -> argparse.ArgumentParser:
     dg = sub.add_parser("digitize", help="capture probe-tip points in the reference frame")
     dg.add_argument("--probe", required=True, help="calibrated probe file")
     dg.add_argument("--calib", required=True, help="camera calibration (its camera is used unless --camera)")
-    dg.add_argument("--camera")
+    dg.add_argument("--camera", help="default: from the calibration;('phone:main' / 'phone:ultrawide' / 'phone:tele' = the SPT Camera app over USB)")
     dg.add_argument("--scene", help="scene from 'show' (reference square size; touch targets to check against)")
     dg.add_argument("--ref-square-mm", type=float, help="reference square size (printed board)")
     dg.add_argument("--frames", type=int, default=15, help="frames averaged per point")
@@ -1190,6 +1256,7 @@ def build_parser() -> argparse.ArgumentParser:
     ph.add_argument("--seconds", type=float, help="stop after this long (default: until Ctrl+C)")
     ph.add_argument("--lock-focus", type=float, metavar="S", help="lock focus S seconds after connecting")
     ph.add_argument("--record", action="store_true", help="save every message to output/phone/stream_<time>.jsonl")
+    ph.add_argument("--lenses", help="run only these lenses, e.g. main or main,tele (default: all)")
     ph.add_argument("--max-fps", type=float, help="detections per lens per second on the phone (app default 10)")
     ph.add_argument("--min-marker-px", type=float, help="smallest marker side to find, px (app default 40)")
     ph.add_argument("--aruco3", action=argparse.BooleanOptionalAction, default=None,

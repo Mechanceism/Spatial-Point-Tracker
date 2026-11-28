@@ -19,7 +19,10 @@ import android.os.HandlerThread
 import org.opencv.android.Utils
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.MatOfByte
+import org.opencv.core.MatOfInt
 import org.opencv.core.Size
+import org.opencv.imgcodecs.Imgcodecs
 import org.opencv.imgproc.Imgproc
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
@@ -58,6 +61,9 @@ class Rig(
     interface Listener {
         fun onFrame(frame: Frame)
         fun onError(message: String)
+
+        /** A small JPEG of one lens for the PC's window (see [setPcPreview]). */
+        fun onPcPreview(stream: StreamTest.Stream, timestampNs: Long, width: Int, height: Int, jpeg: ByteArray) {}
     }
 
     /** Running numbers per lens, for the status display. */
@@ -90,6 +96,15 @@ class Rig(
     @Volatile var detectorConfig = DetectorConfig()
         private set
     private val lastStart = LongArray(streams.size)
+    private val emptySince = LongArray(streams.size) // when a lens last stopped seeing markers (0 = sees some)
+
+    /** Lens whose JPEG preview goes to the PC, how often and how wide (null = none). */
+    @Volatile private var pcPreview: Triple<String, Double, Int>? = null
+    private var lastPcPreviewNs = 0L
+
+    fun setPcPreview(lens: String?, fps: Double = 5.0, width: Int = 960) {
+        pcPreview = lens?.let { Triple(it, fps, width) }
+    }
     val stats = streams.map { Stats() }
 
     /** Lens -> focus distance it reports right now (diopters). */
@@ -117,7 +132,10 @@ class Rig(
                 val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
                 stats[i].cameraFrames++
                 val now = System.nanoTime()
-                val minGap = (1e9 / detectorConfig.maxFps.coerceAtLeast(0.1)).toLong()
+                // A lens that has seen nothing for a second only looks now and then.
+                val searching = emptySince[i] != 0L && now - emptySince[i] > 1_000_000_000L
+                val fps = if (searching) minOf(detectorConfig.searchFps, detectorConfig.maxFps) else detectorConfig.maxFps
+                val minGap = (1e9 / fps.coerceAtLeast(0.1)).toLong()
                 if (!running.get() || now - lastStart[i] < minGap || !busy[i].compareAndSet(false, true)) {
                     img.close(); return@setOnImageAvailableListener
                 }
@@ -208,6 +226,8 @@ class Rig(
         val plane = img.planes[0]
         val gray = Mat(img.height, img.width, CvType.CV_8UC1, plane.buffer, plane.rowStride.toLong())
         val detections = det.detect(gray)
+        val tNow = System.nanoTime()
+        if (detections.markerIds.isEmpty()) { if (emptySince[i] == 0L) emptySince[i] = tNow } else emptySince[i] = 0L
         val st = stats[i]
         st.processed++
         st.detectMsTotal += detections.detectMs
@@ -225,6 +245,18 @@ class Rig(
             bmp = Bitmap.createBitmap(rgba.cols(), rgba.rows(), Bitmap.Config.ARGB_8888)
             Utils.matToBitmap(rgba, bmp)
             small.release(); rgba.release()
+        }
+        pcPreview?.let { (lens, fps, width) ->
+            if (lens == streams[i].lens && now - lastPcPreviewNs > (1e9 / fps).toLong()) {
+                lastPcPreviewNs = now
+                val h = (img.height * width.toDouble() / img.width).toInt()
+                val small = Mat()
+                Imgproc.resize(gray, small, Size(width.toDouble(), h.toDouble()), 0.0, 0.0, Imgproc.INTER_AREA)
+                val buf = MatOfByte()
+                Imgcodecs.imencode(".jpg", small, buf, MatOfInt(Imgcodecs.IMWRITE_JPEG_QUALITY, 75))
+                listener.onPcPreview(streams[i], img.timestamp, img.width, img.height, buf.toArray())
+                small.release(); buf.release()
+            }
         }
         gray.release()
         listener.onFrame(Frame(streams[i], img.width, img.height, img.timestamp, detections, bmp, scale))

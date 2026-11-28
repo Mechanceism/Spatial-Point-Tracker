@@ -54,6 +54,9 @@ class LiveActivity : Activity(), Rig.Listener {
     private var server: Server? = null
     @Volatile private var lensInfo: JSONObject = JSONObject()
     @Volatile private var boards: List<BoardSpec> = BoardSpec.DEFAULTS
+    @Volatile private var wantedLenses: List<String>? = null // null = every back lens; set by the PC
+    @Volatile private var detectorConfig = DetectorConfig()
+    @Volatile private var pcPreview: Triple<String, Double, Int>? = null
 
     private val markerPaint = Paint().apply { color = Color.GREEN; style = Paint.Style.STROKE; strokeWidth = 2f; isAntiAlias = true }
     private val textPaint = Paint().apply { color = Color.GREEN; textSize = 18f; isAntiAlias = true }
@@ -122,10 +125,14 @@ class LiveActivity : Activity(), Rig.Listener {
             lensInfo = LensReport.build(cm)
             // Every lens asked for 4K: main and ultrawide deliver 3840x2160, the tele its
             // full sensor at 1920x1440. (Main 4K + tele 2560x1440 kills the camera.)
-            val streams = physical.map { StreamTest.Stream(it, 3840, 2160) }
+            val lenses = wantedLenses?.filter { it in physical }?.takeIf { it.isNotEmpty() } ?: physical
+            val streams = lenses.map { StreamTest.Stream(it, 3840, 2160) }
             val r = Rig(cm, logical, streams, boards, this, ::log)
+            r.setDetectorConfig(detectorConfig)
+            pcPreview?.let { (lens, fps, width) -> r.setPcPreview(lens, fps, width) }
             if (r.start()) {
                 rig = r
+                server?.send(JSONObject().put("type", "streams").put("streams", streamsJson(r)))
                 status = "running" + if (r.perLensFocus) "" else " (focus is shared by all lenses)"
                 r.previewIndex = streams.indexOfFirst { roles[it.lens] == "main" }.coerceAtLeast(0)
             } else {
@@ -207,14 +214,22 @@ class LiveActivity : Activity(), Rig.Listener {
             .put("device", android.os.Build.MODEL).put("boards", JSONArray(boards.map { it.json() }))
             .put("lenses", lensInfo.optJSONArray("cameras") ?: JSONArray())
         if (r != null) {
-            o.put("streams", JSONArray(r.streams.map {
-                JSONObject().put("lens", it.lens ?: "logical").put("role", roles[it.lens] ?: JSONObject.NULL)
-                    .put("requested", JSONArray(listOf(it.width, it.height)))
-            }))
+            o.put("streams", streamsJson(r))
             o.put("autofocus", JSONArray(r.autofocusLenses)).put("per_lens_focus", r.perLensFocus)
             o.put("detector", r.detectorConfig.json())
         }
         return o
+    }
+
+    private fun streamsJson(r: Rig) = JSONArray(r.streams.map {
+        JSONObject().put("lens", it.lens ?: "logical").put("role", roles[it.lens] ?: JSONObject.NULL)
+            .put("requested", JSONArray(listOf(it.width, it.height)))
+    })
+
+    override fun onPcPreview(stream: StreamTest.Stream, timestampNs: Long, width: Int, height: Int, jpeg: ByteArray) {
+        server?.takeIf { it.connected }?.send(JSONObject().put("type", "image").put("lens", stream.lens ?: "logical")
+            .put("t_ns", timestampNs).put("width", width).put("height", height)
+            .put("jpeg", android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)))
     }
 
     /** A command from the PC; returns the reply. */
@@ -237,9 +252,22 @@ class LiveActivity : Activity(), Rig.Listener {
                 log("boards from the PC: ${boards.joinToString { it.name }}")
             }
             "detector" -> {
-                r ?: return reply.put("ok", false).put("message", "camera not running")
-                r.setDetectorConfig(r.detectorConfig.with(c))
-                reply.put("detector", r.detectorConfig.json())
+                detectorConfig = detectorConfig.with(c)
+                r?.setDetectorConfig(detectorConfig)
+                reply.put("detector", detectorConfig.json())
+            }
+            "streams" -> {
+                // Run only these lenses (fewer streams = less heat). Restarts the camera;
+                // a "streams" message follows once it runs again.
+                val arr = c.optJSONArray("lenses")
+                wantedLenses = arr?.let { a -> (0 until a.length()).map { a.getString(it) } }
+                stopRig()
+                startRig()
+            }
+            "pc_preview" -> {
+                pcPreview = if (c.isNull("lens")) null else Triple(c.getString("lens"), c.optDouble("fps", 5.0), c.optInt("width", 960))
+                val p = pcPreview
+                r?.setPcPreview(p?.first, p?.second ?: 5.0, p?.third ?: 960)
             }
             "preview" -> { r ?: return reply.put("ok", false); r.previewIndex = r.streams.indexOfFirst { it.lens == c.getString("lens") }.coerceAtLeast(0) }
             else -> return reply.put("ok", false).put("message", "unknown command")

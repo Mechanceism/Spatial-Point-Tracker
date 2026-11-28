@@ -284,5 +284,5 @@ class MainActivity : Activity() {
 }
 
 object BuildConfigInfo {
-    const val VERSION = "0.6"
+    const val VERSION = "0.7"
 }

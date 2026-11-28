@@ -134,3 +134,111 @@ def test_connect_fails_cleanly_without_hello():
     with pytest.raises(ConnectionError, match="Live"):
         link.connect(timeout=2)
     srv.close()
+
+
+# ---- PhoneCamera: one lens of the phone as a camera for the live tools -------------
+
+import base64  # noqa: E402
+
+import cv2  # noqa: E402
+
+from spt.detect import BoardDetector, Observed  # noqa: E402
+from spt.phone import PhoneCamera, is_phone, resolve_lens  # noqa: E402
+
+HELLO = {"type": "hello", "app": "SPT Camera", "version": "test", "streams": [],
+         "lenses": [{"id": "2", "role_guess": "ultrawide"}, {"id": "5", "role_guess": "main"},
+                    {"id": "6", "role_guess": "telephoto"}]}
+
+
+def test_resolve_lens_and_is_phone():
+    assert resolve_lens(HELLO, "main") == "5"
+    assert resolve_lens(HELLO, "tele") == "6"
+    assert resolve_lens(HELLO, "2") == "2"
+    with pytest.raises(ValueError, match="5=main"):
+        resolve_lens(HELLO, "macro")
+    assert is_phone("phone:main") and is_phone("Phone") and not is_phone("NexiGo") and not is_phone(None)
+
+
+def test_observed_stands_in_for_an_image():
+    det = parse_frame(frame_msg()).boards["reference"]
+    obs = Observed({"reference": det}, (3840, 2160))
+    assert BoardDetector(REFERENCE).detect(obs) is det
+    assert BoardDetector(BOARDS["target"]).detect(obs) is None
+
+
+class FakeApp:
+    """Like the app: frames for a lens only flow after the PC picks the lenses."""
+
+    def __init__(self):
+        self.srv = socket.socket()
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(1)
+        self.port = self.srv.getsockname()[1]
+        self.commands = []
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def send(self, conn, msg):
+        conn.sendall((json.dumps(msg) + "\n").encode())
+
+    def run(self):
+        conn, _ = self.srv.accept()
+        with conn:
+            self.send(conn, HELLO)
+            conn.settimeout(3)
+            buf = b""
+            try:
+                while True:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        cmd = json.loads(line)
+                        self.commands.append(cmd)
+                        if cmd["cmd"] == "streams" and cmd["lenses"]:
+                            self.send(conn, {"type": "streams", "streams": [{"lens": cmd["lenses"][0]}]})
+                            ok, jpg = cv2.imencode(".jpg", np.full((54, 96), 200, np.uint8))
+                            self.send(conn, {"type": "image", "lens": "5", "t_ns": 7, "width": 3840, "height": 2160,
+                                             "jpeg": base64.b64encode(jpg.tobytes()).decode()})
+                            for t in range(6):  # spaced out like a camera
+                                self.send(conn, frame_msg("2", t=t))  # another lens: ignored
+                                self.send(conn, frame_msg("5", t=t))
+                                time.sleep(0.05)
+            except OSError:
+                pass
+
+
+def test_phone_camera_reads_one_lens_with_detections_and_picture():
+    app = FakeApp()
+    cam = PhoneCamera("phone:main", link=PhoneLink(port=app.port, forward=False, log=lambda s: None),
+                      log=lambda s: None).start(timeout=3)
+    assert cam.lens == "5" and cam.role == "main" and cam.name == "phone:5"
+    first = cam.read(timeout=3)
+    assert first.observed.size == (3840, 2160)
+    assert first.observed.boards["reference"].ids.tolist() == [0, 1, 2]
+    assert first.image.shape == (2160, 3840, 3)  # preview scaled up to the stream size
+    assert 190 < first.image.mean() < 210  # it is the phone's picture, not the blank fallback
+    assert wait_for(lambda: cam._number >= 3)
+    later = cam.read(after=first.number, timeout=3)
+    assert later.number > first.number
+    sent = [c["cmd"] for c in app.commands]
+    assert sent[:4] == ["boards", "detector", "pc_preview", "streams"]
+    assert app.commands[3]["lenses"] == ["5"]  # only the chosen lens streams
+    assert wait_for(lambda: cam._number >= 6)  # the fake is done sending before we hang up
+    cam.stop()
+    assert wait_for(lambda: len(app.commands) == 6)
+    assert [c["cmd"] for c in app.commands][4:] == ["pc_preview", "streams"]
+    assert app.commands[-1]["lenses"] is None  # all lenses given back to the phone
+
+
+@pytest.mark.parametrize("focus, expected", [("lock", {"cmd": "lock_focus"}),
+                                             (2.5, {"cmd": "focus", "lens": "5", "diopters": 2.5})])
+def test_phone_camera_sets_focus(focus, expected):
+    app = FakeApp()
+    cam = PhoneCamera("phone:main", link=PhoneLink(port=app.port, forward=False, log=lambda s: None),
+                      log=lambda s: None, focus=focus, focus_settle=0.0).start(timeout=3)
+    assert cam.focus_locked and cam.focus_d == 2.5
+    assert expected in app.commands
+    assert wait_for(lambda: cam._number >= 6)
+    cam.stop()

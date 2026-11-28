@@ -9,13 +9,17 @@ permission. Messages are JSON, one per line:
   (one lens, one frame: markers + ChArUco corners per board) and ``status`` (thermal,
   camera state) about once a second, and ``reply`` to commands.
 - PC -> phone: ``{"cmd": "lock_focus" | "unlock_focus" | "focus" | "boards" |
-  "detector" | "preview" | "ping", ...}``.
+  "detector" | "streams" | "pc_preview" | "preview" | "ping", ...}``; the phone also
+  sends ``streams`` after (re)starting the camera and ``image`` (a small JPEG of one
+  lens, when asked with ``pc_preview``).
 
-The phone app must have the Live screen open.
+The phone app must have the Live screen open. :class:`PhoneCamera` turns one lens
+into a camera for the live tools (``--camera phone:main``).
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -28,10 +32,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import cv2
 import numpy as np
 
-from .boards import BoardSpec
-from .detect import Detection
+from .boards import BOARDS, BoardSpec
+from .detect import Detection, Observed
 
 SOCKET_NAME = "sptcamera"
 DEFAULT_PORT = 8765
@@ -107,6 +112,8 @@ class PhoneLink:
         self.latest: dict[str, PhoneFrame] = {}
         self.counts: dict[str, int] = defaultdict(int)
         self.replies: deque[dict] = deque(maxlen=50)
+        self.streams: list[dict] = []
+        self.previews: dict[str, tuple[int, int, int, bytes]] = {}  # lens -> (t_ns, width, height, jpeg)
         self._sock: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._hello_event = threading.Event()
@@ -157,11 +164,19 @@ class PhoneLink:
 
     def _handle(self, msg: dict) -> None:
         kind = msg.get("type")
+        if kind == "image":
+            # Not recorded: pictures are for the window only (and large).
+            self.previews[str(msg["lens"])] = (int(msg["t_ns"]), int(msg["width"]), int(msg["height"]),
+                                               base64.b64decode(msg["jpeg"]))
+            return
         if self._record is not None:
             self._record.write(json.dumps(msg) + "\n")
         if kind == "hello":
             self.hello = msg
+            self.streams = msg.get("streams", [])
             self._hello_event.set()
+        elif kind == "streams":
+            self.streams = msg.get("streams", [])
         elif kind == "frame":
             frame = parse_frame(msg)
             with self._lock:
@@ -179,6 +194,15 @@ class PhoneLink:
     def close(self) -> None:
         self._closed = True
         if self._sock is not None:
+            # Close politely: send "no more data" and let the phone hang up first.
+            # Closing while the reader thread is blocked makes Windows reset the
+            # connection, and the last commands (e.g. "give all lenses back") get lost.
+            try:
+                self._sock.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+            if self._thread is not None and self._thread is not threading.current_thread():
+                self._thread.join(timeout=2.0)
             try:
                 self._sock.close()
             except OSError:
@@ -232,6 +256,14 @@ class PhoneLink:
                 cmd[key] = value
         self.send(cmd)
 
+    def set_streams(self, lenses: list[str] | None) -> None:
+        """Run only these lenses on the phone (None = all). Restarts its camera."""
+        self.send({"cmd": "streams", "lenses": lenses})
+
+    def set_pc_preview(self, lens: str | None, fps: float = 5.0, width: int = 960) -> None:
+        """Have the phone send a small JPEG of one lens (None = stop)."""
+        self.send({"cmd": "pc_preview", "lens": lens, "fps": fps, "width": width})
+
     def set_preview(self, lens: str) -> None:
         self.send({"cmd": "preview", "lens": lens})
 
@@ -241,3 +273,166 @@ class PhoneLink:
             out = dict(self.counts)
             self.counts.clear()
         return out
+
+
+def resolve_lens(hello: dict, query: str) -> str:
+    """'main', 'ultrawide', 'telephoto' / 'tele', or a lens id -> the lens id."""
+    q = query.lower()
+    if q in ("tele", "tel"):
+        q = "telephoto"
+    lenses = hello.get("lenses", [])
+    for c in lenses:
+        if str(c.get("id")) == q:
+            return str(c["id"])
+    for c in lenses:
+        if c.get("role_guess") == q:
+            return str(c["id"])
+    roles = ", ".join(f"{c['id']}={c['role_guess']}" for c in lenses if c.get("role_guess"))
+    raise ValueError(f"no phone lens '{query}' (lenses: {roles})")
+
+
+def is_phone(camera: str | None) -> bool:
+    return bool(camera) and str(camera).lower().startswith("phone")
+
+
+@dataclass
+class PhoneSourceFrame:
+    image: np.ndarray  # the phone's preview scaled up to the stream size (for drawing only)
+    number: int
+    time: float
+    observed: Observed  # the phone's detections: what the tools measure with
+
+
+class PhoneCamera:
+    """One lens of the phone as a camera for the live tools, with the same ``start`` /
+    ``read`` / ``stop`` as :class:`spt.cameras.LiveCamera`.
+
+    Measurements use the corners the phone detected at full resolution; the picture
+    is only a small preview scaled up so the tools can draw on it. Only the chosen
+    lens streams on the phone (less heat), and the PC's board definitions are sent.
+
+    ``focus``: None leaves the lens as it is; ``"lock"`` lets autofocus settle and then
+    locks it (calibration); a number fixes the focus at that many diopters (the
+    distance stored in a calibration). ``focus_d`` is where the lens is focused.
+    """
+
+    fourcc = "phone"
+
+    def __init__(self, camera: str = "phone:main", port: int = DEFAULT_PORT, max_fps: float = 10.0,
+                 preview_fps: float = 5.0, preview_width: int = 960, boards: list[BoardSpec] | None = None,
+                 log: Callable[[str], None] = print, link: PhoneLink | None = None,
+                 focus: str | float | None = None, focus_settle: float = 2.0):
+        self.query = camera.split(":", 1)[1] if ":" in camera else "main"
+        self.focus = focus
+        self.focus_settle = focus_settle
+        self.max_fps = max_fps
+        self.preview_fps = preview_fps
+        self.preview_width = preview_width
+        self.boards = boards if boards is not None else list(BOARDS.values())
+        self.log = log
+        self.link = link or PhoneLink(port=port, log=log)
+        self.link.on_frame = self._on_frame
+        self.lens: str | None = None
+        self.role: str | None = None
+        self._cond = threading.Condition()
+        self._latest: PhoneFrame | None = None
+        self._number = 0
+        self._image_key: tuple | None = None
+        self._image: np.ndarray | None = None
+
+    @property
+    def name(self) -> str:
+        return f"phone:{self.lens}" if self.lens else "phone"
+
+    def start(self, timeout: float = 20.0) -> "PhoneCamera":
+        hello = self.link.connect()
+        self.lens = resolve_lens(hello, self.query)
+        self.role = next((c.get("role_guess") for c in hello.get("lenses", []) if str(c.get("id")) == self.lens), None)
+        self.link.send_boards(self.boards)
+        self.link.set_detector(max_fps=self.max_fps)
+        self.link.set_pc_preview(self.lens, self.preview_fps, self.preview_width)
+        self.link.set_streams([self.lens])
+        self.log(f"phone lens {self.lens} ({self.role}): waiting for frames...")
+        try:
+            self.read(timeout=timeout)
+            self._apply_focus()
+        except TimeoutError:
+            self.stop()
+            raise
+        return self
+
+    @property
+    def focus_d(self) -> float | None:
+        """Where the lens is focused (diopters), if it has autofocus."""
+        return self._latest.focus_d if self._latest is not None else None
+
+    @property
+    def focus_locked(self) -> bool:
+        return bool(self._latest is not None and self._latest.focus_locked)
+
+    def _apply_focus(self) -> None:
+        if self.focus is None or self.focus_d is None:  # nothing asked, or a fixed-focus lens
+            return
+        if self.focus == "lock":
+            self.log(f"letting autofocus settle for {self.focus_settle:g} s, then locking it...")
+            time.sleep(self.focus_settle)
+            self.link.lock_focus()
+        else:
+            self.link.set_focus(self.lens, float(self.focus))
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not self.focus_locked:
+            time.sleep(0.05)
+        if not self.focus_locked:
+            raise TimeoutError("the phone did not confirm the focus lock")
+        if self.focus != "lock":  # let the lens arrive before measuring
+            time.sleep(0.5)
+        d = self.focus_d
+        self.log(f"focus locked at {d:.3f} D" + (f" ({1 / d:.2f} m)" if d and d > 0 else ""))
+
+    def _on_frame(self, frame: PhoneFrame) -> None:
+        if frame.lens != self.lens:
+            return
+        with self._cond:
+            self._latest = frame
+            self._number += 1
+            self._cond.notify_all()
+
+    def read(self, after: int = 0, timeout: float = 5.0) -> PhoneSourceFrame:
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while self._number <= after or self._latest is None:
+                left = deadline - time.monotonic()
+                if left <= 0 or self.link.error:
+                    raise TimeoutError(f"no frame from the phone ({self.link.error or 'timeout'})")
+                self._cond.wait(min(left, 0.2))
+            frame, number = self._latest, self._number
+        return PhoneSourceFrame(self._picture(frame), number, frame.received, Observed(frame.boards, frame.image_size))
+
+    def _picture(self, frame: PhoneFrame) -> np.ndarray:
+        prev = self.link.previews.get(frame.lens)
+        key = (prev[0] if prev else None, frame.width, frame.height)
+        if key != self._image_key:
+            img = None
+            if prev is not None:
+                small = cv2.imdecode(np.frombuffer(prev[3], np.uint8), cv2.IMREAD_GRAYSCALE)
+                if small is not None:
+                    img = cv2.cvtColor(cv2.resize(small, (frame.width, frame.height), interpolation=cv2.INTER_LINEAR),
+                                       cv2.COLOR_GRAY2BGR)
+            if img is None:
+                img = np.full((frame.height, frame.width, 3), 60, np.uint8)
+            self._image, self._image_key = img, key
+        return self._image.copy()
+
+    def stop(self) -> None:
+        try:
+            self.link.set_pc_preview(None)
+            self.link.set_streams(None)  # give the phone's Live screen all lenses back
+        except Exception:  # noqa: BLE001 - best effort on the way out
+            pass
+        self.link.close()
+
+    def __enter__(self) -> "PhoneCamera":
+        return self.start()
+
+    def __exit__(self, *exc) -> None:
+        self.stop()

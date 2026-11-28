@@ -42,11 +42,18 @@ data class BoardSpec(val name: String, val squaresX: Int, val squaresY: Int, val
  * resolution; `minMarkerPx` (smallest marker side to look for, in pixels) sets how much
  * it may reduce. `maxFps` caps detections per lens per second (heat and battery).
  */
-data class DetectorConfig(val maxFps: Double = 10.0, val aruco3: Boolean = true, val minMarkerPx: Double = 40.0) {
+data class DetectorConfig(
+    val maxFps: Double = 10.0,
+    val aruco3: Boolean = true,
+    val minMarkerPx: Double = 40.0,
+    val searchFps: Double = 2.0, // rate for a lens that has seen no marker for a second
+) {
     fun json(): JSONObject = JSONObject().put("max_fps", maxFps).put("aruco3", aruco3).put("min_marker_px", minMarkerPx)
+        .put("search_fps", searchFps)
 
     fun with(o: JSONObject) = DetectorConfig(
         o.optDouble("max_fps", maxFps), o.optBoolean("aruco3", aruco3), o.optDouble("min_marker_px", minMarkerPx),
+        o.optDouble("search_fps", searchFps),
     )
 }
 

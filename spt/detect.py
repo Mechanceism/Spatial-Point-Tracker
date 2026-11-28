@@ -50,13 +50,24 @@ class Detection:
         return len(self.ids)
 
 
+@dataclass
+class Observed:
+    """Board detections made elsewhere (the phone app) standing in for an image:
+    :meth:`BoardDetector.detect` returns the one for its board by name."""
+
+    boards: dict[str, Detection]
+    size: tuple[int, int]  # width, height of the image they were found in
+
+
 class BoardDetector:
     def __init__(self, spec: BoardSpec):
         self.spec = spec
         self.board = spec.cv_board()
         self._detector = cv2.aruco.CharucoDetector(self.board)
 
-    def detect(self, gray: np.ndarray) -> Detection | None:
+    def detect(self, gray: "np.ndarray | Observed") -> Detection | None:
+        if isinstance(gray, Observed):
+            return gray.boards.get(self.spec.name)
         corners, ids, _marker_corners, _marker_ids = self._detector.detectBoard(gray)
         if ids is None or len(ids) == 0:
             return None

@@ -333,3 +333,21 @@ ports - same sensor and size, so its calibration holds):
   phone more than its bias deserved. Every camera now gets a systematic floor
   (`--floor-mm`, default 0.25 mm) on top of its fit.
 - A fair test of fusion needs printed (non-emissive) boards: no glass, no refraction.
+
+Second run (2026-11-28, systematic floor 0.25 mm, phone at 6 detections/s to stay
+cool, 16 captures, smaller Kamvas turns):
+
+| 6 captures with both cameras (>= 5 of 15 frames each) | RMS | x | y | z |
+|---|---|---|---|---|
+| phone main | 0.27 | 0.19 | 0.08 | 0.18 |
+| NexiGo | 0.37 | 0.26 | 0.08 | 0.25 |
+| equal mean | 0.24 | 0.20 | 0.04 | 0.12 |
+| **covariance-fused** | **0.18** | 0.16 | 0.03 | **0.08** |
+
+All 16 captures (whichever cameras saw both boards): phone 0.30 (11), NexiGo 0.34
+(14), fused 0.27 mm (16). Error correlation phone-NexiGo across captures: x +0.58,
+y -0.70, **z -0.63**: from two directions the depth errors oppose each other, and the
+covariance weighting cancels them (depth 0.18 / 0.25 -> 0.08 mm). Neither camera had
+a notable mean bias this time (|mean| <= 0.08 mm), so the first run's phone offset
+depended on its viewing angle. Both cameras still lost the target board in about half
+the frame groups: keep the boards inside both views.

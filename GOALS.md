@@ -119,8 +119,9 @@ Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.
 - [x] Two devices fused (`measure-multi` with phone + webcam calibrations): per-camera 3D
       uncertainty from the board fits, inverse-covariance fusion (simulation: 3x better
       than the best camera at 40° apart)
-- [ ] Real two-device result: first run had only 3 joint captures and a phone bias
-      (cover glass?); repeat with printed boards and both cameras seeing both boards
+- [x] Real two-device result (phone + NexiGo ~40° apart, Kamvas): fused 0.18 mm vs
+      phone 0.27 / NexiGo 0.37 on joint captures; depth 0.18-0.25 -> 0.08 mm
+- [ ] Confirm with printed boards (no cover glass) and more joint captures
 - [ ] Fusion weights that include systematic error per camera (now a fixed 0.25 mm floor)
 - [ ] Project file: named points, point lists from other programs, car coordinate frame
 - [ ] Derived points: midpoint, circle fit (hole rim), sphere fit (ball joints)

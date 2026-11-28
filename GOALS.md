@@ -8,30 +8,36 @@ standalone; other programs (including Suspension-Calculator) take its output.
 Design decisions: [docs/PLAN.md](docs/PLAN.md). Phase 0: [docs/PHASE0.md](docs/PHASE0.md).
 Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.md). Phone: [docs/PHONE.md](docs/PHONE.md).
 
-## Current status and handoff (2026-11-27)
+## Current status and handoff (2026-11-28)
 
-- Branch **`phase-2`** (phase 0 and phase 1 are merged into `main`). 77 tests,
-  all passing (`.venv\Scripts\python -m pytest`).
-- Working end to end: guided live calibration, live measurement, phone-screen probe,
-  pivot calibration, and digitizing points against touch targets (1.55 mm raw,
-  ~0.5 mm with a constant offset removed).
-- Just finished: printed prism probe designs (`hex30`, `hex60`), folding templates,
-  and the probe size simulation, including the S23 as a camera.
-- The S23's Camera2 report shows a logical back camera (ID 0, level 3, manual focus)
-  with physical lenses **2 (ultrawide, fixed focus), 5 and 6 (main / telephoto,
-  which is which still unknown)**. Two lenses streaming at once is guaranteed at
-  about 1080p; three lenses, or 4K, needs testing on the phone.
-- The PC has **no Android tooling** yet (no Android Studio, SDK, adb or Java).
+- Everything is on **`main`** (phase 2 and the phone work merged; old branches
+  deleted). 106 tests, all passing (`.venv\Scripts\python -m pytest`).
+- **Waiting on the user:** the hex30 / hex60 bodies are printing; the print file
+  `output\print\print_all_letter.pdf` (11 letter pages: reference + target boards,
+  hex30 + hex60 templates, loose markers 165-25 mm, IDs 100-177) is to be printed at
+  100 % and checked against the 100 mm bars.
+- **Phone (S23, SPT Camera 0.10 installed; 0.11 built, not installed):** all three back
+  lenses calibrated through the app (`output\calibrations\phone_2/5/6`), live
+  detection, USB link (`python -m spt phone`), phone works as `--camera phone:main`
+  in every live tool. App 0.11 reads DICT_5X5_250 (loose markers 100+): install it
+  next time the phone is used. USB debugging is still on: when phone work pauses for
+  a while, uninstall the app, turn USB debugging off, revoke authorisations, turn
+  Auto Blocker back on (docs/PHONE.md).
+- **Fusion:** phone + NexiGo ~40° apart beat both cameras when neither is biased
+  (0.18 mm, depth 0.08); the Kamvas cover glass biases a camera viewing at an angle.
+  Confirm with printed boards.
+- **Marker maps** (`spt/markermap.py`, `map-probe`) are built and tested in
+  simulation (glue errors 0.6-0.8 mm -> 0.01 mm, tip 2 mm -> 0.08 mm per frame).
+- The NexiGo now offers only YUY2/NV12 1080p (16.5 fps); MJPG vanished on both USB
+  ports. Calibration still valid (same sensor and size).
 
-### Decisions for next session
+### Next session (when the prints are done)
 
-1. **Next step:** ~~marker maps or the S23 app first?~~ Decided 2026-11-27: the phone app
-   (branch `phone-app`).
-2. **Android tooling:** decided: command-line only (installed, see docs/PHONE.md).
-3. **Phone safety:** agreed approach is a normal app only (no root, no bootloader
-   unlock, no system changes), camera permission only, temperature watchdog, USB
-   debugging approved for this PC only and turned off afterwards. Back up the phone
-   first. The user decides whether to go ahead.
+1. Assemble the hex30: template printed at 100 %, glued flat, rigid tip on the axis.
+2. `python -m spt map-probe --design hex30 --calib <camera calibration>` (~40 views).
+3. Wire the probe marker map into `pivot` and `digitize` (they still expect the
+   phone-screen ChArUco board), then pivot the printed tip.
+4. Re-run the touch test with the printed probe; then printed boards for fusion.
 
 ## Phase 0: feasibility (done)
 

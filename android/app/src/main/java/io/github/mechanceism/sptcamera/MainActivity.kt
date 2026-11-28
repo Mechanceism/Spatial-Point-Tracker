@@ -31,9 +31,9 @@ import java.util.Locale
  *    the real frame rate of each, under the temperature watchdog.
  *
  * Results go to the screen, to logcat (tag SPT) and to the app's private files
- * (lens_report.json, streams_latest.json). The camera is closed as soon as the app
+ * (lens_report.json, streams_latest.json, snapshot_latest.json + snap_*.jpg). The camera is closed as soon as the app
  * leaves the screen. Can also be started from the PC:
- *   adb shell am start -n io.github.mechanceism.sptcamera/.MainActivity --es run report|streams [--es seconds 6]
+ *   adb shell am start -n io.github.mechanceism.sptcamera/.MainActivity --es run report|streams|snapshot [--es seconds 6]
  */
 class MainActivity : Activity() {
 
@@ -69,6 +69,7 @@ class MainActivity : Activity() {
         }
         button("Lens report") { start("report", DEFAULT_SECONDS) }
         button("Stream test") { start("streams", DEFAULT_SECONDS) }
+        button("Snapshot") { start("snapshot", DEFAULT_SECONDS) }
         button("Stop") { stopRequested = true; log("stop requested") }
         statusView = TextView(this).apply { textSize = 14f; setPadding(0, 12, 0, 12) }
         logView = TextView(this).apply {
@@ -120,8 +121,9 @@ class MainActivity : Activity() {
 
     private fun start(mode: String, seconds: Double) {
         if (worker?.isAlive == true) { log("busy - press Stop first"); return }
-        if (mode == "streams" && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+        if (mode != "report" && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             pending = mode to seconds
+            log("asking for the camera permission - tap \"While using the app\"")
             requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
             return
         }
@@ -131,7 +133,8 @@ class MainActivity : Activity() {
                 when (mode) {
                     "report" -> lensReport()
                     "streams" -> streamTest(seconds)
-                    else -> log("unknown mode '$mode' (use report or streams)")
+                    "snapshot" -> snapshot()
+                    else -> log("unknown mode '$mode' (use report, streams or snapshot)")
                 }
             } catch (t: Throwable) {
                 log("ERROR ${t.javaClass.simpleName}: ${t.message}")
@@ -176,6 +179,24 @@ class MainActivity : Activity() {
         save("streams_latest.json", text)
     }
 
+    /** One frame per lens from a 3-lens 4K session (default, then raw optics), plus the telephoto alone at its largest listed size. */
+    private fun snapshot() {
+        val cm = getSystemService(CameraManager::class.java)
+        val (logical, physical) = LensReport.backLogical(cm) ?: run { log("no back multi-camera found"); return }
+        val runs = org.json.JSONArray()
+        val combos = mutableListOf(StreamTest.Combo(physical, 3840, 2160), StreamTest.Combo(physical, 3840, 2160, raw = true))
+        physical.lastOrNull()?.let { combos.add(StreamTest.Combo(listOf(it), 2560, 1440)) }
+        for (combo in combos) {
+            if (stopRequested) break
+            log("=== Snapshot ${combo.label} ===")
+            val r = StreamTest(cm, thermal, ::log) { stopRequested }.snapshot(logical, combo, filesDir)
+            r.optString("error").takeIf { it.isNotEmpty() }?.let { log("ERROR $it") }
+            r.optString("warning").takeIf { it.isNotEmpty() }?.let { log("warning: $it") }
+            runs.put(r)
+        }
+        save("snapshot_latest.json", org.json.JSONObject().put("format", 1).put("runs", runs).toString(2))
+    }
+
     private fun save(name: String, text: String) {
         File(filesDir, name).writeText(text)
         log("saved files/$name")
@@ -197,5 +218,5 @@ class MainActivity : Activity() {
 }
 
 object BuildConfigInfo {
-    const val VERSION = "0.1"
+    const val VERSION = "0.2"
 }

@@ -57,7 +57,7 @@ object LensReport {
         o.put("hardware_level", levelName(c[CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL]))
         val caps = c[CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES] ?: IntArray(0)
         o.put("capabilities", JSONArray(caps.map { capabilityName(it) }))
-        if (c.physicalCameraIds.isNotEmpty()) o.put("physical_ids", JSONArray(c.physicalCameraIds.toList()))
+        if (c.physicalCameraIds.isNotEmpty()) o.put("physical_ids", JSONArray(c.physicalCameraIds.sortedBy { it.toIntOrNull() ?: Int.MAX_VALUE }))
 
         val focals = c[CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS] ?: FloatArray(0)
         o.put("focal_mm", floats(focals))
@@ -98,6 +98,17 @@ object LensReport {
         c[CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION]?.let {
             o.put("focus_calibration", when (it) { 0 -> "uncalibrated"; 1 -> "approximate"; 2 -> "calibrated"; else -> "$it" })
         }
+        c[CameraCharacteristics.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE]?.let {
+            o.put("sensor_sync", if (it == CameraCharacteristics.LOGICAL_MULTI_CAMERA_SENSOR_SYNC_TYPE_CALIBRATED) "calibrated" else "approximate")
+        }
+        c[CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE]?.let {
+            o.put("timestamp_source", if (it == CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME) "realtime" else "unknown")
+        }
+        c[CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES]?.let { modes ->
+            o.put("distortion_correction_modes", JSONArray(modes.map { when (it) { 0 -> "OFF"; 1 -> "FAST"; 2 -> "HIGH_QUALITY"; else -> "$it" } }))
+        }
+        val af = c[CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES] ?: IntArray(0)
+        o.put("af_modes", JSONArray(af.map { afName(it) }))
         val ois = c[CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION] ?: IntArray(0)
         o.put("ois", ois.contains(1))
         val vstab = c[CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES] ?: IntArray(0)
@@ -140,7 +151,11 @@ object LensReport {
     fun summary(cam: JSONObject): String {
         val sb = StringBuilder()
         sb.append("id ").append(cam.getString("id")).append(' ').append(cam.optString("facing"))
-        if (cam.has("physical_ids")) sb.append("  LOGICAL -> ").append(cam.getJSONArray("physical_ids").join(","))
+        if (cam.has("physical_ids")) {
+            val ids = cam.getJSONArray("physical_ids")
+            sb.append("  LOGICAL -> ").append((0 until ids.length()).joinToString(",") { ids.getString(it) })
+            if (cam.has("sensor_sync")) sb.append("  sync ").append(cam.getString("sensor_sync"))
+        }
         if (!cam.getBoolean("listed")) sb.append("  (hidden physical)")
         cam.optString("role_guess").takeIf { it.isNotEmpty() }?.let { sb.append("  [").append(it).append(']') }
         sb.append('\n')
@@ -153,7 +168,12 @@ object LensReport {
         sb.append('\n')
         if (cam.has("fx_px_3840")) sb.append("   fx ≈ ").append(cam.get("fx_px_3840")).append(" px @3840, ")
             .append(cam.get("fx_px_1920")).append(" px @1920")
-        sb.append(if (cam.getBoolean("fixed_focus")) "   fixed focus" else "   focus ≥ ${cam.opt("closest_focus_m")} m")
+        val hasAf = cam.optJSONArray("af_modes")?.let { a -> (0 until a.length()).any { a.getString(it) != "OFF" } } ?: false
+        sb.append(when {
+            !cam.getBoolean("fixed_focus") -> "   focus ≥ ${cam.opt("closest_focus_m")} m"
+            hasAf -> "   AF (min focus distance not reported)"
+            else -> "   fixed focus"
+        })
         sb.append(if (cam.getBoolean("ois")) "   OIS" else "")
         sb.append("   ").append(cam.optString("hardware_level"))
         cam.optJSONObject("yuv_max_fps")?.let { yuv ->
@@ -166,6 +186,16 @@ object LensReport {
     }
 
     private fun floats(a: FloatArray) = JSONArray(a.map { round(it.toDouble(), 5) })
+
+    private fun afName(mode: Int) = when (mode) {
+        CameraCharacteristics.CONTROL_AF_MODE_OFF -> "OFF"
+        CameraCharacteristics.CONTROL_AF_MODE_AUTO -> "AUTO"
+        CameraCharacteristics.CONTROL_AF_MODE_MACRO -> "MACRO"
+        CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_VIDEO -> "CONTINUOUS_VIDEO"
+        CameraCharacteristics.CONTROL_AF_MODE_CONTINUOUS_PICTURE -> "CONTINUOUS_PICTURE"
+        CameraCharacteristics.CONTROL_AF_MODE_EDOF -> "EDOF"
+        else -> "af_$mode"
+    }
 
     private fun levelName(level: Int?) = when (level) {
         CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY -> "LEGACY"
@@ -182,6 +212,11 @@ object LensReport {
         CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR -> "MANUAL_SENSOR"
         CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING -> "MANUAL_POST_PROCESSING"
         CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW -> "RAW"
+        CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_PRIVATE_REPROCESSING -> "PRIVATE_REPROCESSING"
+        CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_YUV_REPROCESSING -> "YUV_REPROCESSING"
+        CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_DYNAMIC_RANGE_TEN_BIT -> "TEN_BIT"
+        CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_STREAM_USE_CASE -> "STREAM_USE_CASE"
+        CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_COLOR_SPACE_PROFILES -> "COLOR_SPACE_PROFILES"
         CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_READ_SENSOR_SETTINGS -> "READ_SENSOR_SETTINGS"
         CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_BURST_CAPTURE -> "BURST_CAPTURE"
         CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_DEPTH_OUTPUT -> "DEPTH_OUTPUT"

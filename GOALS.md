@@ -79,9 +79,15 @@ Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.
 
 - [x] Android tooling: command-line JDK 17 + SDK + adb, no Android Studio ([docs/PHONE.md](docs/PHONE.md))
 - [x] Test app `android/` (SPT Camera): lens report + multi-lens stream test, temperature watchdog, CAMERA permission only
-- [ ] Run the test app on the S23 and record the results
-- [ ] S23 test app: identify lenses (focal length, sensor), try two- and three-lens
-      combinations at 1080p / 4K, measure fps and temperature
+- [x] Run the test app on the S23 and record the results
+- [x] S23 test app: lenses identified (2 ultrawide, 5 main, 6 telephoto 3x); all
+      1/2/3-lens combinations stream at 30 fps at 1080p and 4K, battery +1.8 °C max
+      ([docs/PHONE.md](docs/PHONE.md#s23-results-2026-11-27-spt-camera-02))
+- [x] Findings: ultrawide stream is corrected and cropped to ~84° (no off switch); the
+      tele's largest stream is 2560x1440 (1920x1440 when asked for 4K); lens
+      timestamps are identical, so true exposure sync is unverified
+- [ ] Mixed-size session: main 4K + ultrawide 4K + tele 2560x1440 at once?
+- [ ] Focus lock on main / tele (manual focus distance) and per-lens calibration
 - [ ] Native Android app: detects markers on the phone and sends corners (raw
       observations) + per-frame results to the PC; the PC stays the hub
 - [ ] Per-lens calibration through the same video pipeline; stabilisation off,

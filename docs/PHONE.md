@@ -259,3 +259,38 @@ Hand-held around the Kamvas board (`calibrate-live --camera phone:<lens>`):
 - The tele's large radial terms (k2 38, k3 -290) are real for this lens: refitting the
   saved corners with k3 fixed doubles the error (0.61 px), with k2 and k3 fixed 1.22 px.
 - Pixels per mm at 1 m: ultrawide 1.58, main 2.58, tele 3.81 (tele at 1920 wide).
+
+## Several lenses together (`measure-multi`, 2026-11-27)
+
+`python -m spt measure-multi` streams all three lenses in one session (zoom 0.6, main
+and tele focused at their calibrated distances), pairs frames by timestamp (the app
+picks the same frames on every lens), lets each lens measure the target in the
+reference frame with its own calibration, and fuses the points (fx² weights). It
+reports each lens alone, equal weights and the fusion against the exact truth.
+
+Two runs, phone hand-held ~0.45 m from the Kamvas measure layout:
+
+| Capture RMS | main | tele | ultrawide | fused (fx²) | fused (1/frame variance) |
+|---|---|---|---|---|---|
+| run 1 (12 captures; 8 with main + tele) | 0.55 | 0.41 | - | **0.32** | |
+| run 2 (5 captures) | **0.30** | 0.86 | - | 0.63 | 0.54 |
+
+What decides it:
+
+- **The tele sees only part of the boards at 0.45 m** (29° view): few corners, often
+  near its edge. Its frames were steady (0.15-0.4 mm spread) but up to 1.4 mm off:
+  a *bias*, which neither averaging nor noise-based weights can detect. Weighted by
+  fx², it then pulls the fused point off.
+- **The ultrawide found nothing**: the measure-layout markers (~10 mm on the Kamvas)
+  are ~35 px in it at 0.45 m, under the phone detector's 40 px minimum
+  (`--min-marker-px`); it then idles at the search rate.
+- **The main lens alone was the most consistent** (0.30-0.55 mm; 0.55 when held beyond
+  its locked focus distance).
+- With lenses 1-2 cm apart, the views are nearly the same, so depth errors are
+  largely shared: fusion can average noise but not the geometry.
+
+Conclusion: on one phone, **choose the lens for the distance** rather than fusing:
+main for close work, tele only where it sees whole boards (farther away), ultrawide
+for keeping reference markers in view. Fusion pays off with different *viewpoints*
+(separate devices), and needs per-lens uncertainty from geometry (corner count,
+board size in view), not focal length alone.

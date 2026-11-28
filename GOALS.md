@@ -103,6 +103,9 @@ Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.
 - [x] Zoom 0.6 for the full ultrawide view (zoom 1.0 crops it to 72°); calibrations
       record zoom and session lenses
 - [x] Ultrawide (0.245 px, rational model) and tele (0.273 px) calibrated
+- [x] Several lenses at once (`measure-multi`): fused 0.32 vs main 0.55 / tele 0.41 in
+      one run, but 0.63 vs main 0.30 in the next: the tele's partial-board bias and
+      shared viewpoint limit co-located fusion. Use the right lens per distance.
 - [ ] Digitize with the phone (needs the printed probe; the S23 can't be camera and probe)
 - [x] Native Android app: detects markers on the phone and sends corners (raw
       observations) to the PC; the PC stays the hub
@@ -113,7 +116,8 @@ Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.
 
 ## Later
 
-- [ ] Multiple cameras / devices fused on the PC (separate viewpoints fix depth error)
+- [ ] Multiple cameras / devices fused on the PC (separate viewpoints fix depth error);
+      weights from each view's geometry (corners, board size), not focal length alone
 - [ ] Project file: named points, point lists from other programs, car coordinate frame
 - [ ] Derived points: midpoint, circle fit (hole rim), sphere fit (ball joints)
 - [ ] Exports: CSV (done for points), OBJ (Blender), Fusion 360; explicit axes and units

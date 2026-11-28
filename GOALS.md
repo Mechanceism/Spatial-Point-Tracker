@@ -98,7 +98,8 @@ Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.
 - [x] Phone as a camera source for calibrate-live / measure-live / pivot / digitize
       (`--camera phone:main`); focus locked on the board and stored in the calibration
 - [x] Main lens calibrated through the phone: 0.244 px RMS at 4K, 100 % coverage
-- [ ] Live measurement test with the phone (compare with the NexiGo's 0.27 mm)
+- [x] Live measurement test with the phone, hand-held: 0.39 mm per frame, 0.31 mm per
+      capture (NexiGo fixed: 0.48 / 0.27); x/y 0.03-0.04 mm, z dominates
 - [ ] Calibrate ultrawide and tele; digitize with the phone
 - [x] Native Android app: detects markers on the phone and sends corners (raw
       observations) to the PC; the PC stays the hub

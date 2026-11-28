@@ -210,3 +210,20 @@ phone hand-held around the Kamvas board, focus locked at 2.77 D (0.36 m):
 | views | 21 | |
 
 0.24 px at 4K is ~0.12 px at webcam scale, with 1.75x the pixels per mm.
+
+### Live measurement test, main lens (2026-11-27)
+
+`python -m spt measure-live --calib output/phone_5.calib.json --scene output/scene_measure.json`:
+phone **hand-held** 0.41-0.52 m from the Kamvas (focus restored to 0.36 m), 12
+captures of 15 frames, truth 175.49 mm.
+
+| | S23 main, hand-held | NexiGo, fixed (docs/CAMERAS.md) |
+|---|---|---|
+| single frame | **0.39 mm** (x 0.06, y 0.05, z 0.38) | 0.48 mm (x 0.17, y 0.16, z 0.42) |
+| frame noise within a capture | 0.13 mm | |
+| one capture (15 frames) | 0.31 mm, worst 0.62 | 0.27 mm, worst 0.58 |
+| mean of all captures | 0.19 mm (12 captures) | 0.05 mm (45 captures) |
+
+In-plane error is a third of the webcam's (x/y 0.03-0.04 mm per capture); depth (z)
+is again almost all of it. Hand-held at 0.4-0.5 m the phone already matches the fixed
+webcam per capture, well inside the 1-2 mm target.

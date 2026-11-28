@@ -6,7 +6,7 @@ the scaling and alignment of 3D scans. **Target: 1-2 mm per point.** The project
 standalone; other programs (including Suspension-Calculator) take its output.
 
 Design decisions: [docs/PLAN.md](docs/PLAN.md). Phase 0: [docs/PHASE0.md](docs/PHASE0.md).
-Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.md).
+Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.md). Phone: [docs/PHONE.md](docs/PHONE.md).
 
 ## Current status and handoff (2026-11-27)
 
@@ -25,10 +25,9 @@ Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.
 
 ### Decisions for next session
 
-1. **Next step:** marker maps first (no hardware needed), or the S23 multi-camera
-   test app first?
-2. **Android tooling:** full Android Studio (choose Custom and skip the emulator), or
-   just the JDK + command-line tools?
+1. **Next step:** ~~marker maps or the S23 app first?~~ Decided 2026-11-27: the phone app
+   (branch `phone-app`).
+2. **Android tooling:** decided: command-line only (installed, see docs/PHONE.md).
 3. **Phone safety:** agreed approach is a normal app only (no root, no bootloader
    unlock, no system changes), camera permission only, temperature watchdog, USB
    debugging approved for this PC only and turned off afterwards. Back up the phone
@@ -78,7 +77,9 @@ Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.
 
 ## Phone as a smart camera
 
-- [ ] Install Android tooling (pending decision)
+- [x] Android tooling: command-line JDK 17 + SDK + adb, no Android Studio ([docs/PHONE.md](docs/PHONE.md))
+- [x] Test app `android/` (SPT Camera): lens report + multi-lens stream test, temperature watchdog, CAMERA permission only
+- [ ] Run the test app on the S23 and record the results
 - [ ] S23 test app: identify lenses (focal length, sensor), try two- and three-lens
       combinations at 1080p / 4K, measure fps and temperature
 - [ ] Native Android app: detects markers on the phone and sends corners (raw

@@ -1180,7 +1180,7 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
     if ref_b is None or tgt_b is None:
         raise SystemExit("the scene must show both boards (show --layout measure)")
     measurers = {lens: PointMeasurer(c, ref_b.spec, tgt_b.spec, max_rms_px=args.max_rms) for lens, c in calibs.items()}
-    fused = FusedMeasurer(measurers, anchor=lenses, weighting=args.weighting)
+    fused = FusedMeasurer(measurers, anchor=lenses, weighting=args.weighting, floor_mm=args.floor_mm)
     session = LiveMeasureSession(fused, scene.truth(), frames_per_capture=args.frames)
     multi = None
     if phone_keys:
@@ -1433,6 +1433,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="one calibration per camera: phone lenses and/or webcams (the first drives the window)")
     mm.add_argument("--weighting", choices=["cov", "fx2", "equal"], default="cov",
                     help="cov: each camera's 3D uncertainty from its board fits (default); fx2: focal length squared")
+    mm.add_argument("--floor-mm", type=float, default=0.25,
+                    help="uncertainty every camera gets on top of its fit (systematic errors), mm (default 0.25)")
     mm.add_argument("--scene", default="output/scene_measure.json", help="scene from 'show --layout measure'")
     mm.add_argument("--frames", type=int, default=15, help="frame groups averaged per capture")
     mm.add_argument("--max-rms", type=float, default=1.0, help="reject a lens's frame whose board fit is worse (px)")

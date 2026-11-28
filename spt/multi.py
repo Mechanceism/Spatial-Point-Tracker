@@ -35,13 +35,16 @@ class FusedResult(ViewResult):
 class FusedMeasurer:
     def __init__(self, measurers: dict[str, PointMeasurer], weights: dict[str, float] | None = None,
                  anchor: list[str] | None = None, min_cameras: int = 1, weighting: str = "cov",
-                 floor_mm: float = 0.05):
+                 floor_mm: float = 0.25):
         self.measurers = measurers
         if weighting == "equal":
             weights = {k: 1.0 for k in measurers}
         self.weights = weights or {k: float(m.calib.camera_matrix[0, 0]) ** 2 for k, m in measurers.items()}
         self.weighting = weighting
-        self.floor_mm = floor_mm  # added to every covariance: no camera is ever "perfect"
+        # Added to every covariance (as a sphere): errors the board fits cannot see -
+        # calibration, cover glass, flex. Without it, the camera with the smallest
+        # *noise* wins even when it has the larger *bias* (seen with the phone + NexiGo).
+        self.floor_mm = floor_mm
         self.anchor = anchor or list(measurers)  # whose poses drive the stillness check, in order
         self.min_cameras = min_cameras
         self.last: dict[str, ViewResult] = {}
@@ -79,7 +82,7 @@ class FusedMeasurer:
         ), ""
 
 
-def fuse_points(results: dict, weights: dict[str, float], weighting: str = "cov", floor_mm: float = 0.05) -> np.ndarray:
+def fuse_points(results: dict, weights: dict[str, float], weighting: str = "cov", floor_mm: float = 0.25) -> np.ndarray:
     """Weighted mean of the cameras' points: by inverse 3x3 covariance when every
     camera has one (``weighting="cov"``), else by the scalar weights."""
     pts = {k: np.asarray(r.point, float) for k, r in results.items()}

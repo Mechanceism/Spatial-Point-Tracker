@@ -294,3 +294,42 @@ main for close work, tele only where it sees whole boards (farther away), ultraw
 for keeping reference markers in view. Fusion pays off with different *viewpoints*
 (separate devices), and needs per-lens uncertainty from geometry (corner count,
 board size in view), not focal length alone.
+
+## Two devices: phone (main) + NexiGo (2026-11-28)
+
+`measure-multi` takes webcam calibrations too; each camera measures the target in the
+reference frame and gets a **3x3 uncertainty** from its two board fits
+(`pose.cov6` = sigma² (JᵀJ)⁻¹ per fit, `measure.point_covariance` propagates both).
+It is long along the camera's line of sight, so cameras looking from different
+directions cover each other's depth: `--weighting cov` fuses by inverse covariance.
+
+Simulation (`tests/test_fusion_geometry.py`, 0.3 px corner noise, per frame):
+
+| cameras apart | front alone | side alone | equal mean | covariance-fused |
+|---|---|---|---|---|
+| 10° | 0.99 | 0.83 | 0.65 | 0.56 mm |
+| 20° | 1.07 | 0.58 | 0.59 | 0.33 mm |
+| 40° | 1.01 | 0.62 | 0.61 | **0.20 mm** |
+| 60° | 1.01 | 0.58 | 0.58 | 0.16 mm |
+
+(The phone's own lenses are ~2° apart at 0.45 m: no gain, as measured.)
+
+First real run (phone fixed ~0.36 m, NexiGo ~40° to the side, Kamvas turned between
+captures; the NexiGo now only offers YUY2 1080p at 16.5 fps, MJPG gone on both USB
+ports - same sensor and size, so its calibration holds):
+
+| 3 captures with both cameras | RMS | x | y | z |
+|---|---|---|---|---|
+| phone main | 0.58 | 0.29 | 0.23 | 0.44 |
+| NexiGo | **0.10** | 0.05 | 0.03 | 0.08 |
+| equal mean | 0.31 | 0.12 | 0.11 | 0.26 |
+| covariance-fused (floor 0.05 mm) | 0.42 | 0.22 | 0.15 | 0.32 |
+
+- Too few joint captures: the phone missed the target board in 497 of 816 frame
+  groups, the NexiGo in 329 - both boards must stay in both views.
+- The phone's error was a consistent **bias** (x ≈ -0.3, z +0.3..0.6 mm), likely the
+  Kamvas cover glass seen at an angle (cf. the touch test's -1.57 mm z).
+- The board-fit covariance only knows *noise*; it trusted the closer, higher-resolution
+  phone more than its bias deserved. Every camera now gets a systematic floor
+  (`--floor-mm`, default 0.25 mm) on top of its fit.
+- A fair test of fusion needs printed (non-emissive) boards: no glass, no refraction.

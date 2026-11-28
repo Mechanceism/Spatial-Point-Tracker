@@ -54,7 +54,7 @@ def test_point_covariance_and_fusion():
             res[name] = r
             errs[name].append(r.point - truth)
             predicted[name].append(r.cov)
-        errs["cov"].append(fuse_points(res, {}, "cov") - truth)
+        errs["cov"].append(fuse_points(res, {}, "cov", floor_mm=0.05) - truth)
         errs["fx2"].append(fuse_points(res, {"front": 1.0, "side": 1.0}, "fx2") - truth)
     rms = {k: float(np.sqrt(np.mean(np.sum(np.square(v), axis=1)))) for k, v in errs.items()}
 

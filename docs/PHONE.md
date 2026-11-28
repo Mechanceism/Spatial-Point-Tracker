@@ -359,3 +359,21 @@ boards: when one dropped a board, the comparison jumped to the other camera's vi
 (hundreds of mm apart) and restarted the count. Now each camera is compared with its
 own previous frame (`FusedResult.motion_mm`), and `measure-multi` averages 8 frame
 groups per capture (default; ~1.3 s at 6 detections/s).
+
+Third run (8 frames per capture, per-camera stillness: captures came quickly):
+
+| | 4 joint captures (>= 3 frames each) | 10 captures with both cameras |
+|---|---|---|
+| phone main | 0.44 (mean x +0.24, y +0.22, z -0.23) | 0.46 |
+| NexiGo | 0.24 | 0.24 |
+| equal mean | 0.22 | **0.22** |
+| covariance-fused | **0.19** | 0.29 |
+
+Over the three runs the pattern is consistent: fusion wins clearly when neither
+camera is biased (run 2: 0.18 vs 0.27 / 0.37), and falls between the cameras when
+one has a hidden, consistent bias (runs 1 and 3: the phone, ~0.2-0.6 mm, depending on
+where it stood), because the board-fit covariance models noise, not bias. The bias
+changing with the phone's placement points to the Kamvas cover glass (refraction
+depends on the viewing angle). **The deciding test needs printed boards.** Until
+then, equal weights (or a larger `--floor-mm`, which moves toward them) are the
+safer choice when a camera may be biased.

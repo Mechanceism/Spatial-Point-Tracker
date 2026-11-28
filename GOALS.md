@@ -86,10 +86,18 @@ Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.
 - [x] Findings: ultrawide stream is corrected and cropped to ~84° (no off switch); the
       tele's largest stream is 2560x1440 (1920x1440 when asked for 4K); lens
       timestamps are identical, so true exposure sync is unverified
-- [ ] Mixed-size session: main 4K + ultrawide 4K + tele 2560x1440 at once?
-- [ ] Focus lock on main / tele (manual focus distance) and per-lens calibration
-- [ ] Native Android app: detects markers on the phone and sends corners (raw
-      observations) + per-frame results to the PC; the PC stays the hub
+- [x] Mixed-size session: main 4K + tele 2560x1440 kills the camera device; use all-4K
+      (tele delivers 1920x1440)
+- [x] Focus: per-lens manual focus and lock work (0 D is ignored: use 0.01 D)
+- [x] Live view with on-phone detection (OpenCV 5.1.0, same as the PC), all lenses
+- [x] PC link over USB (`adb forward` to a local socket, no network permission):
+      `python -m spt phone`, `spt/phone.py`
+- [x] Detection load: ArUco3 + 10 fps cap (15-45 ms per 4K frame); still warms slowly
+- [ ] Heat: only the lenses needed, low rate until the probe is still
+- [ ] Phone as a camera source for calibrate-live / measure-live / digitize
+      (per-lens calibration through the same pipeline)
+- [x] Native Android app: detects markers on the phone and sends corners (raw
+      observations) to the PC; the PC stays the hub
 - [ ] Per-lens calibration through the same video pipeline; stabilisation off,
       focus locked, explicit physical lens (no auto lens switching)
 - [ ] Telephoto for long range (hex30 for body lines at 3-4 m?), ultrawide to keep

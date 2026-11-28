@@ -144,3 +144,39 @@ fast with two lenses.
   including the ultrawide's built-in correction), with focus locked on main and tele.
 - Next for the app: live preview + on-phone marker detection, then sending raw
   observations to the PC.
+
+## Live view and the PC link (SPT Camera 0.4-0.6)
+
+- **Live** (on the phone): streams all three back lenses (each asked for 4K: main and
+  ultrawide 3840x2160, tele 1920x1440), detects DICT_5X5_100 markers (sub-pixel) and
+  the ChArUco boards of `spt/boards.py` with OpenCV 5.1.0 (same as the PC), and shows
+  one lens with the detections. **Lock focus** freezes main and tele at their current
+  autofocus distance. The camera stops when the screen is left and pauses when warm.
+- **PC link:** while Live is open, `python -m spt phone` forwards a port over USB and
+  receives every detected frame (`spt/phone.py`: `PhoneLink`, frames become the same
+  `Detection` objects the PC tools use). Commands: lock / unlock / set focus per lens,
+  board definitions (the PC sends `spt.boards`), detection settings, preview lens.
+
+```powershell
+.venv\Scripts\python -m spt phone --lock-focus 4 --record          # until Ctrl+C
+.venv\Scripts\python -m spt phone --max-fps 5 --min-marker-px 30   # tune the phone's detector
+```
+
+### Results (S23, Kamvas boards at ~0.4 m)
+
+- All three lenses find every reference (24) and target (12) corner; the tele sees
+  part of the boards (narrow view).
+- Per-lens manual focus works (both lenses report exactly the distance set). Focus
+  distance 0 (infinity) is ignored by the S23, so the app uses 0.01 D (100 m) instead.
+  The tele appears not to focus closer than ~0.6 m.
+- **Main 4K + tele 2560x1440 in one session kills the camera device** (although the
+  phone reports it supported); the app uses the proven all-4K request instead.
+- Detection load (three lenses, 4K):
+
+| Setting | 4K lenses | Tele 1920x1440 | Heat |
+|---|---|---|---|
+| Full-res, every frame (0.5) | 5-9 fps, 70-200 ms | 15-19 fps, 20-50 ms | thermal headroom 0.83 -> 0.85 in 13 s: paused |
+| ArUco3 + 10 fps cap (0.6 default) | ~8-9 fps, 15-45 ms | ~9 fps, 5-20 ms | headroom 0.76 -> 0.81 in 60 s, battery 34.7 -> 36.7 °C (charging) |
+
+Still warming slowly at 3 x 10 fps: run only the lenses needed, lower `--max-fps`
+when idle, or detect at a lower rate until the probe is held still.

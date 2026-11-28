@@ -35,6 +35,17 @@ object LensReport {
             .put("cameras", JSONArray(cams))
     }
 
+    /** Physical lens ID -> "ultrawide" / "main" / "telephoto" (guessed from the field of view). */
+    fun roles(cm: CameraManager): Map<String, String> {
+        val cams = build(cm).getJSONArray("cameras")
+        val out = HashMap<String, String>()
+        for (i in 0 until cams.length()) {
+            val c = cams.getJSONObject(i)
+            c.optString("role_guess").takeIf { it.isNotEmpty() }?.let { out[c.getString("id")] = it }
+        }
+        return out
+    }
+
     /** The back logical multi-camera (the one with physical lenses behind it), if any. */
     fun backLogical(cm: CameraManager): Pair<String, List<String>>? {
         for (id in cm.cameraIdList) {
@@ -58,6 +69,9 @@ object LensReport {
         val caps = c[CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES] ?: IntArray(0)
         o.put("capabilities", JSONArray(caps.map { capabilityName(it) }))
         if (c.physicalCameraIds.isNotEmpty()) o.put("physical_ids", JSONArray(c.physicalCameraIds.sortedBy { it.toIntOrNull() ?: Int.MAX_VALUE }))
+        if (c.physicalCameraIds.isNotEmpty()) {
+            o.put("physical_request_keys", JSONArray((c.availablePhysicalCameraRequestKeys ?: emptyList()).map { it.name }.sorted()))
+        }
 
         val focals = c[CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS] ?: FloatArray(0)
         o.put("focal_mm", floats(focals))

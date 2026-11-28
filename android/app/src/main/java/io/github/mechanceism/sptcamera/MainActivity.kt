@@ -31,9 +31,10 @@ import java.util.Locale
  *    the real frame rate of each, under the temperature watchdog.
  *
  * Results go to the screen, to logcat (tag SPT) and to the app's private files
- * (lens_report.json, streams_latest.json, snapshot_latest.json + snap_*.jpg). The camera is closed as soon as the app
+ * (lens_report.json, streams_latest.json, mixed_latest.json, focus_latest.json,
+ * snapshot_latest.json + snap_*.jpg). The camera is closed as soon as the app
  * leaves the screen. Can also be started from the PC:
- *   adb shell am start -n io.github.mechanceism.sptcamera/.MainActivity --es run report|streams|snapshot [--es seconds 6]
+ *   adb shell am start -n io.github.mechanceism.sptcamera/.MainActivity --es run report|streams|mixed|focus|snapshot|live [--es seconds 6]
  */
 class MainActivity : Activity() {
 
@@ -60,17 +61,21 @@ class MainActivity : Activity() {
         thermal = Thermal(this)
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        fun button(label: String, action: () -> Unit) = Button(this).apply {
+        val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun button(row: LinearLayout, label: String, action: () -> Unit) = Button(this).apply {
             text = label
             isAllCaps = false
             setOnClickListener { action() }
-            buttons.addView(this)
+            row.addView(this)
         }
-        button("Lens report") { start("report", DEFAULT_SECONDS) }
-        button("Stream test") { start("streams", DEFAULT_SECONDS) }
-        button("Snapshot") { start("snapshot", DEFAULT_SECONDS) }
-        button("Stop") { stopRequested = true; log("stop requested") }
+        button(row1, "Lens report") { start("report", DEFAULT_SECONDS) }
+        button(row1, "Stream test") { start("streams", DEFAULT_SECONDS) }
+        button(row1, "Stop") { stopRequested = true; log("stop requested") }
+        button(row1, "Live") { openLive() }
+        button(row2, "Mixed streams") { start("mixed", DEFAULT_SECONDS) }
+        button(row2, "Focus test") { start("focus", DEFAULT_SECONDS) }
+        button(row2, "Snapshot") { start("snapshot", DEFAULT_SECONDS) }
         statusView = TextView(this).apply { textSize = 14f; setPadding(0, 12, 0, 12) }
         logView = TextView(this).apply {
             typeface = Typeface.MONOSPACE
@@ -78,7 +83,8 @@ class MainActivity : Activity() {
             setTextIsSelectable(true)
         }
         scroll = ScrollView(this).apply { addView(logView) }
-        root.addView(buttons)
+        root.addView(row1)
+        root.addView(row2)
         root.addView(statusView)
         root.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         root.setOnApplyWindowInsetsListener { v, insets ->
@@ -96,8 +102,19 @@ class MainActivity : Activity() {
         handleIntent(intent)
     }
 
+    private fun openLive() {
+        if (worker?.isAlive == true) { log("busy - press Stop first"); return }
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            log("asking for the camera permission - tap \"While using the app\", then Live again")
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA)
+            return
+        }
+        startActivity(Intent(this, LiveActivity::class.java))
+    }
+
     private fun handleIntent(intent: Intent?) {
         val mode = intent?.getStringExtra("run") ?: return
+        if (mode == "live") { intent.removeExtra("run"); openLive(); return }
         val seconds = intent.getStringExtra("seconds")?.toDoubleOrNull() ?: DEFAULT_SECONDS
         intent.removeExtra("run")
         start(mode, seconds)
@@ -132,9 +149,11 @@ class MainActivity : Activity() {
             try {
                 when (mode) {
                     "report" -> lensReport()
-                    "streams" -> streamTest(seconds)
+                    "streams" -> streamTest(seconds, mixed = false)
+                    "mixed" -> streamTest(seconds, mixed = true)
+                    "focus" -> focusTest()
                     "snapshot" -> snapshot()
-                    else -> log("unknown mode '$mode' (use report, streams or snapshot)")
+                    else -> log("unknown mode '$mode' (use report, streams, mixed, focus or snapshot)")
                 }
             } catch (t: Throwable) {
                 log("ERROR ${t.javaClass.simpleName}: ${t.message}")
@@ -161,13 +180,44 @@ class MainActivity : Activity() {
         save("lens_report.json", report.toString(2))
     }
 
-    private fun streamTest(seconds: Double) {
+    /** The back lenses by role (from the lens report's field-of-view guess). */
+    private class Lenses(val logical: String, val physical: List<String>, val roles: Map<String, String>, val autofocus: List<String>) {
+        val tele: String? get() = roles.entries.firstOrNull { it.value == "telephoto" }?.key
+        val others: List<String> get() = physical.filter { it != tele }
+
+        /**
+         * The set we would use: every lens asked for 4K (the tele then delivers 1920x1440,
+         * its full sensor). Main 4K + tele 2560x1440 is "supported" on paper but kills
+         * the camera device on the S23.
+         */
+        val useful: StreamTest.Combo
+            get() = StreamTest.Combo(physical, 3840, 2160)
+    }
+
+    private fun lenses(cm: CameraManager): Lenses? {
+        val (logical, physical) = LensReport.backLogical(cm) ?: run { log("no back multi-camera found"); return null }
+        val cams = LensReport.build(cm).getJSONArray("cameras")
+        val roles = HashMap<String, String>()
+        val af = ArrayList<String>()
+        for (i in 0 until cams.length()) {
+            val c = cams.getJSONObject(i)
+            val id = c.getString("id")
+            if (id !in physical) continue
+            c.optString("role_guess").takeIf { it.isNotEmpty() }?.let { roles[id] = it }
+            val modes = c.optJSONArray("af_modes")
+            if (modes != null && (0 until modes.length()).any { modes.getString(it) == "AUTO" }) af.add(id)
+        }
+        return Lenses(logical, physical, roles, af)
+    }
+
+    private fun streamTest(seconds: Double, mixed: Boolean) {
         val cm = getSystemService(CameraManager::class.java)
-        val back = LensReport.backLogical(cm)
-        if (back == null) { log("no back multi-camera found"); return }
-        val (logical, physical) = back
-        val combos = StreamTest.combos(physical)
-        log("=== Stream test: logical $logical, lenses ${physical.joinToString(",")}, ${combos.size} runs x ${seconds}s ===")
+        val lenses = lenses(cm) ?: return
+        val logical = lenses.logical
+        val physical = lenses.physical
+        val combos = if (mixed) StreamTest.mixedCombos(lenses.tele, lenses.others) else StreamTest.combos(physical)
+        val kind = if (mixed) "Mixed streams" else "Stream test"
+        log("=== $kind: logical $logical, lenses ${physical.joinToString(",")} ${lenses.roles}, ${combos.size} runs x ${seconds}s ===")
         log("start: ${thermal.snapshot().text()}")
         val result = StreamTest(cm, thermal, ::log) { stopRequested }.sweep(logical, combos, seconds)
         result.optString("error").takeIf { it.isNotEmpty() }?.let { log("ERROR $it") }
@@ -175,17 +225,33 @@ class MainActivity : Activity() {
         log("end: ${thermal.snapshot().text()}")
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val text = result.toString(2)
-        save("streams_$stamp.json", text)
-        save("streams_latest.json", text)
+        val prefix = if (mixed) "mixed" else "streams"
+        save("${prefix}_$stamp.json", text)
+        save("${prefix}_latest.json", text)
     }
 
-    /** One frame per lens from a 3-lens 4K session (default, then raw optics), plus the telephoto alone at its largest listed size. */
+    /** Continuous AF, a fixed-focus sweep and a hold, in the useful 3-lens session. */
+    private fun focusTest() {
+        val cm = getSystemService(CameraManager::class.java)
+        val lenses = lenses(cm) ?: return
+        if (lenses.autofocus.isEmpty()) { log("no lens with autofocus"); return }
+        val combo = lenses.useful
+        log("=== Focus test ${combo.label}, autofocus lenses ${lenses.autofocus.joinToString(",")} ===")
+        log("point the phone at something detailed and hold it still (about 15 s)")
+        val diopters = listOf(0f, 0.5f, 1f, 1.5f, 2f, 2.5f, 3f, 4f, 5f, 6f, 8f, 10f)
+        val result = StreamTest(cm, thermal, ::log) { stopRequested }.focusSweep(lenses.logical, combo, lenses.autofocus, diopters)
+        result.optString("error").takeIf { it.isNotEmpty() }?.let { log("ERROR $it") }
+        result.optString("stopped").takeIf { it.isNotEmpty() }?.let { log("stopped: $it") }
+        save("focus_latest.json", result.toString(2))
+    }
+
+    /** One frame per lens from the useful 3-lens session (main + ultrawide 4K, telephoto 1440p). */
     private fun snapshot() {
         val cm = getSystemService(CameraManager::class.java)
-        val (logical, physical) = LensReport.backLogical(cm) ?: run { log("no back multi-camera found"); return }
+        val lenses = lenses(cm) ?: return
+        val logical = lenses.logical
         val runs = org.json.JSONArray()
-        val combos = mutableListOf(StreamTest.Combo(physical, 3840, 2160), StreamTest.Combo(physical, 3840, 2160, raw = true))
-        physical.lastOrNull()?.let { combos.add(StreamTest.Combo(listOf(it), 2560, 1440)) }
+        val combos = listOf(lenses.useful)
         for (combo in combos) {
             if (stopRequested) break
             log("=== Snapshot ${combo.label} ===")
@@ -218,5 +284,5 @@ class MainActivity : Activity() {
 }
 
 object BuildConfigInfo {
-    const val VERSION = "0.2"
+    const val VERSION = "0.4"
 }

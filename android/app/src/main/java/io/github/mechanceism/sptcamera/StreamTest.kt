@@ -34,20 +34,35 @@ class StreamTest(
     private val log: (String) -> Unit,
     private val stopRequested: () -> Boolean,
 ) {
-    /** One session: `lenses` holds a physical camera ID per stream (null = the logical camera). */
-    data class Combo(val lenses: List<String?>, val width: Int, val height: Int, val raw: Boolean = false) {
+    /** One stream: a physical lens (null = the logical camera) at a requested size. */
+    data class Stream(val lens: String?, val width: Int, val height: Int) {
+        val name: String get() = lens ?: "logical"
+    }
+
+    /** One session with one or more streams. */
+    data class Combo(val streams: List<Stream>, val raw: Boolean = false) {
+        constructor(lenses: List<String?>, width: Int, height: Int, raw: Boolean = false) :
+            this(lenses.map { Stream(it, width, height) }, raw)
+
+        val lenses: List<String?> get() = streams.map { it.lens }
+        private val uniform: Boolean get() = streams.all { it.width == streams[0].width && it.height == streams[0].height }
         val label: String
-            get() = "${height}p [" + lenses.joinToString("+") { it ?: "logical" } + "]" + if (raw) " raw" else ""
+            get() = (if (uniform) "${streams[0].height}p [" + streams.joinToString("+") { it.name } + "]"
+            else "[" + streams.joinToString("+") { "${it.name}@${it.height}p" } + "]") + if (raw) " raw" else ""
     }
 
     private class FrameStats {
         @Volatile var measuring = false
         val stamps = ArrayList<Long>()
+        var delivered: String? = null // the size the phone actually sends
 
-        @Synchronized fun add(ns: Long) { if (measuring) stamps.add(ns) }
+        @Synchronized fun add(img: android.media.Image) {
+            if (delivered == null) delivered = "${img.width}x${img.height}"
+            if (measuring) stamps.add(img.timestamp)
+        }
 
         @Synchronized fun json(): JSONObject {
-            val o = JSONObject().put("frames", stamps.size)
+            val o = JSONObject().put("frames", stamps.size).put("delivered", delivered ?: JSONObject.NULL)
             if (stamps.size >= 2) {
                 val gaps = stamps.zipWithNext { a, b -> (b - a) / 1e6 }.sorted()
                 o.put("fps", round((stamps.size - 1) * 1e9 / (stamps.last() - stamps.first()), 2))
@@ -68,24 +83,36 @@ class StreamTest(
             .put("thermal_start", thermal.snapshot().json())
         val runs = JSONArray()
         result.put("runs", runs)
-        val device = open(logicalId)
+        var device = open(logicalId)
         if (device == null) {
             result.put("error", "could not open camera $logicalId: $lost")
             thread.quitSafely()
             return result
         }
+        var reopens = 0
         try {
             val chars = cm.getCameraCharacteristics(logicalId)
             for (combo in combos) {
                 if (stopRequested()) { result.put("stopped", "by user"); break }
-                if (lost != null) { result.put("stopped", "camera lost: $lost"); break }
+                if (lost != null) {
+                    // A combination the phone can't really run can kill the camera device
+                    // (S23: main 4K + tele 1440p). Close it, reopen and go on.
+                    log("camera lost ($lost) - reopening")
+                    device?.close()
+                    if (++reopens > 3) { result.put("stopped", "camera lost too often"); break }
+                    SystemClock.sleep(1000)
+                    lost = null
+                    device = open(logicalId)
+                    if (device == null) { result.put("stopped", "could not reopen: $lost"); break }
+                }
                 if (!coolDown()) { result.put("stopped", "phone stayed warm"); break }
-                val run = runCombo(device, chars, combo, seconds)
+                val run = runCombo(device!!, chars, combo, seconds)
+                if (lost != null) run.put("camera_lost", lost)
                 runs.put(run)
                 log(line(combo, run))
             }
         } finally {
-            device.close()
+            device?.close()
             thread.quitSafely()
         }
         result.put("thermal_end", thermal.snapshot().json())
@@ -120,15 +147,15 @@ class StreamTest(
     }
 
     private fun runCombo(device: CameraDevice, chars: CameraCharacteristics, combo: Combo, seconds: Double): JSONObject {
-        val run = JSONObject().put("label", combo.label).put("width", combo.width).put("height", combo.height)
-            .put("lenses", JSONArray(combo.lenses.map { it ?: "logical" }))
+        val run = JSONObject().put("label", combo.label)
+            .put("requested", JSONArray(combo.streams.map { "${it.name}:${it.width}x${it.height}" }))
         val before = thermal.snapshot()
         run.put("thermal_before", before.json())
-        val readers = combo.lenses.map { ImageReader.newInstance(combo.width, combo.height, ImageFormat.YUV_420_888, 4) }
+        val readers = combo.streams.map { ImageReader.newInstance(it.width, it.height, ImageFormat.YUV_420_888, 4) }
         val stats = readers.map { FrameStats() }
         readers.forEachIndexed { i, reader ->
             reader.setOnImageAvailableListener({ r ->
-                r.acquireLatestImage()?.let { img -> stats[i].add(img.timestamp); img.close() }
+                r.acquireLatestImage()?.let { img -> stats[i].add(img); img.close() }
             }, handler)
         }
         var session: CameraCaptureSession? = null
@@ -193,7 +220,7 @@ class StreamTest(
         val result = JSONObject().put("label", combo.label)
         val device = open(logicalId)
         if (device == null) { thread.quitSafely(); return result.put("error", "could not open camera: $lost") }
-        val readers = combo.lenses.map { ImageReader.newInstance(combo.width, combo.height, ImageFormat.YUV_420_888, 4) }
+        val readers = combo.streams.map { ImageReader.newInstance(it.width, it.height, ImageFormat.YUV_420_888, 4) }
         val held = arrayOfNulls<android.media.Image>(readers.size)
         val all = CountDownLatch(readers.size)
         val armed = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -226,7 +253,8 @@ class StreamTest(
             held.forEachIndexed { i, img ->
                 if (img == null) return@forEachIndexed
                 val lens = combo.lenses[i] ?: "logical"
-                val name = "snap_${lens}_${combo.width}x${combo.height}${if (combo.raw) "_raw" else ""}.jpg"
+                val req = combo.streams[i]
+                val name = "snap_${lens}_${req.width}x${req.height}${if (combo.raw) "_raw" else ""}.jpg"
                 java.io.FileOutputStream(java.io.File(dir, name)).use { out ->
                     android.graphics.YuvImage(nv21(img), ImageFormat.NV21, img.width, img.height, null)
                         .compressToJpeg(android.graphics.Rect(0, 0, img.width, img.height), 92, out)
@@ -247,6 +275,205 @@ class StreamTest(
             thread.quitSafely()
         }
         return result
+    }
+
+    /** Per-lens numbers for one focus phase. */
+    private class PhaseStats {
+        val sharp = HashMap<String, MutableList<Double>>()
+        val focus = HashMap<String, MutableList<Float>>()
+        @Synchronized fun addSharp(lens: String, v: Double) { sharp.getOrPut(lens) { ArrayList() }.add(v) }
+        @Synchronized fun addFocus(lens: String, v: Float) { focus.getOrPut(lens) { ArrayList() }.add(v) }
+        @Synchronized fun json(): JSONObject {
+            val o = JSONObject()
+            for (lens in (sharp.keys + focus.keys).sorted()) {
+                val l = JSONObject()
+                sharp[lens]?.sorted()?.let { if (it.isNotEmpty()) l.put("sharpness", round(it[it.size / 2], 1)).put("frames", it.size) }
+                focus[lens]?.sorted()?.let {
+                    if (it.isNotEmpty()) l.put("focus_d", round(it[it.size / 2].toDouble(), 3))
+                        .put("focus_min_d", round(it.first().toDouble(), 3)).put("focus_max_d", round(it.last().toDouble(), 3))
+                }
+                o.put(lens, l)
+            }
+            return o
+        }
+    }
+
+    /**
+     * Manual focus check inside one session. Phase "af": continuous autofocus (where it
+     * settles tells how far away the scene is). Then a sweep of fixed focus distances
+     * (diopters = 1 / metres; 0 = infinity), then a 5 s hold at each lens's sharpest
+     * setting. Records the focus distance each lens reports and a sharpness score
+     * (variance of the Laplacian over the image centre) for every stream.
+     */
+    fun focusSweep(logicalId: String, combo: Combo, focusLenses: List<String>, diopters: List<Float>): JSONObject {
+        val result = JSONObject().put("format", 1).put("label", combo.label).put("focus_lenses", JSONArray(focusLenses))
+        val device = open(logicalId)
+        if (device == null) { thread.quitSafely(); return result.put("error", "could not open camera: $lost") }
+        val chars = cm.getCameraCharacteristics(logicalId)
+        val physKeys = chars.availablePhysicalCameraRequestKeys ?: emptyList()
+        val perLens = physKeys.contains(CaptureRequest.LENS_FOCUS_DISTANCE) && physKeys.contains(CaptureRequest.CONTROL_AF_MODE)
+        result.put("per_lens_focus_keys", perLens)
+        log("focus can be set per lens: $perLens")
+        val readers = combo.streams.map { ImageReader.newInstance(it.width, it.height, ImageFormat.YUV_420_888, 4) }
+        val current = java.util.concurrent.atomic.AtomicReference<PhaseStats?>(null)
+        val phases = JSONArray()
+        result.put("phases", phases)
+        var session: CameraCaptureSession? = null
+        try {
+            readers.forEachIndexed { i, reader ->
+                val name = combo.streams[i].name
+                reader.setOnImageAvailableListener({ r ->
+                    r.acquireLatestImage()?.let { img ->
+                        current.get()?.addSharp(name, sharpness(img))
+                        img.close()
+                    }
+                }, handler)
+            }
+            val configured = CountDownLatch(1)
+            val outputs = readers.mapIndexed { i, r ->
+                OutputConfiguration(r.surface).apply { combo.streams[i].lens?.let { setPhysicalCameraId(it) } }
+            }
+            device.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outputs, executor,
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(s: CameraCaptureSession) { session = s; configured.countDown() }
+                    override fun onConfigureFailed(s: CameraCaptureSession) { configured.countDown() }
+                }))
+            if (!configured.await(10, TimeUnit.SECONDS) || session == null) return result.put("error", "session not configured")
+            val s = session!!
+            val callback = object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(cs: CameraCaptureSession, req: CaptureRequest, res: android.hardware.camera2.TotalCaptureResult) {
+                    val ph = current.get() ?: return
+                    res.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE)?.let { ph.addFocus("logical", it) }
+                    for ((id, pr) in res.physicalCameraTotalResults) {
+                        pr.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE)?.let { ph.addFocus(id, it) }
+                    }
+                }
+            }
+            val physical = combo.lenses.filterNotNull().toSet()
+
+            // settings: lens -> diopters (null = continuous AF); "logical" sets the logical request.
+            fun focusRequest(settings: Map<String, Float?>): CaptureRequest {
+                val b = if (perLens) device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD, physical)
+                else device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+                readers.forEach { b.addTarget(it.surface) }
+                b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+                if ((chars[CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION] ?: IntArray(0)).contains(1)) {
+                    b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)
+                }
+                fixed30(chars)?.let { b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+                val logicalD = if (settings.containsKey("logical")) settings["logical"] else settings.values.firstOrNull()
+                if (logicalD == null) {
+                    b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                } else {
+                    b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                    b.set(CaptureRequest.LENS_FOCUS_DISTANCE, logicalD)
+                }
+                if (perLens) for (lens in focusLenses) {
+                    val d = if (settings.containsKey(lens)) settings[lens] else logicalD
+                    if (d == null) {
+                        b.setPhysicalCameraKey(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO, lens)
+                    } else {
+                        b.setPhysicalCameraKey(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF, lens)
+                        b.setPhysicalCameraKey(CaptureRequest.LENS_FOCUS_DISTANCE, d, lens)
+                    }
+                }
+                return b.build()
+            }
+
+            fun runPhase(name: String, settings: Map<String, Float?>, settle: Double, measure: Double): JSONObject? {
+                s.setRepeatingRequest(focusRequest(settings), callback, handler)
+                if (waitWhileStreaming(settle) != null) return null
+                val ph = PhaseStats()
+                current.set(ph)
+                val stop = waitWhileStreaming(measure)
+                current.set(null)
+                val o = JSONObject().put("phase", name).put("lenses", ph.json())
+                phases.put(o)
+                log(focusLine(name, o.getJSONObject("lenses")))
+                return if (stop == null) o else null
+            }
+
+            runPhase("af", emptyMap(), 3.0, 1.0) ?: return result.put("stopped", "during the AF phase")
+            val best = HashMap<String, Pair<Float, Double>>()
+            for (d in diopters) {
+                val o = runPhase("d=%.2f".format(d), focusLenses.associateWith<String, Float?> { d } + ("logical" to d), 0.7, 0.6)
+                    ?: return result.put("stopped", "during the sweep")
+                val lenses = o.getJSONObject("lenses")
+                for (lens in focusLenses) {
+                    val sh = lenses.optJSONObject(lens)?.optDouble("sharpness") ?: continue
+                    if (!sh.isNaN() && sh > (best[lens]?.second ?: -1.0)) best[lens] = d to sh
+                }
+            }
+            val bestJson = JSONObject()
+            best.forEach { (lens, v) -> bestJson.put(lens, JSONObject().put("diopters", v.first.toDouble()).put("sharpness", v.second)) }
+            result.put("best", bestJson)
+            log("sharpest: " + best.entries.joinToString(", ") {
+                val d = it.value.first
+                "${it.key} at %.2f D (%s)".format(d, if (d > 0) "%.2f m".format(1 / d) else "infinity")
+            })
+            if (best.isNotEmpty()) {
+                val hold: Map<String, Float?> = best.mapValues { it.value.first } + ("logical" to best.values.first().first)
+                runPhase("hold", hold, 0.7, 5.0)
+            }
+            try { s.stopRepeating() } catch (_: Exception) {}
+        } catch (e: Exception) {
+            result.put("error", "${e.javaClass.simpleName}: ${e.message}")
+            log("ERROR ${e.javaClass.simpleName}: ${e.message}")
+        } finally {
+            session?.close()
+            device.close()
+            readers.forEach { it.close() }
+            thread.quitSafely()
+        }
+        return result
+    }
+
+    private fun focusLine(name: String, lenses: JSONObject): String {
+        val sb = StringBuilder(name.padEnd(7))
+        for (lens in lenses.keys().asSequence().sorted()) {
+            val l = lenses.getJSONObject(lens)
+            sb.append(" | ").append(lens).append(':')
+            if (l.has("focus_d")) sb.append(" f ").append(l.get("focus_d")).append(" D")
+            if (l.has("focus_min_d") && l.getDouble("focus_min_d") != l.getDouble("focus_max_d")) {
+                sb.append(" (").append(l.get("focus_min_d")).append("..").append(l.get("focus_max_d")).append(')')
+            }
+            if (l.has("sharpness")) sb.append(" sharp ").append(l.get("sharpness"))
+        }
+        return sb.toString()
+    }
+
+    /** Variance of the 4-neighbour Laplacian over a 512x512 patch at the image centre. */
+    private fun sharpness(img: android.media.Image): Double {
+        val plane = img.planes[0]
+        val buf = plane.buffer
+        val n = minOf(512, img.width - 2, img.height - 2)
+        val x0 = (img.width - n) / 2
+        val y0 = (img.height - n) / 2
+        val rows = Array(n + 2) { ByteArray(n + 2) }
+        for (r in 0 until n + 2) {
+            val base = (y0 - 1 + r) * plane.rowStride + (x0 - 1) * plane.pixelStride
+            if (plane.pixelStride == 1) {
+                buf.position(base)
+                buf.get(rows[r])
+            } else {
+                for (c in 0 until n + 2) rows[r][c] = buf.get(base + c * plane.pixelStride)
+            }
+        }
+        var sum = 0.0
+        var sum2 = 0.0
+        for (r in 1..n) {
+            val up = rows[r - 1]
+            val row = rows[r]
+            val dn = rows[r + 1]
+            for (c in 1..n) {
+                val v = (up[c].toInt() and 0xff) + (dn[c].toInt() and 0xff) + (row[c - 1].toInt() and 0xff) +
+                    (row[c + 1].toInt() and 0xff) - 4 * (row[c].toInt() and 0xff)
+                sum += v
+                sum2 += v.toDouble() * v
+            }
+        }
+        val count = n.toDouble() * n
+        return sum2 / count - (sum / count) * (sum / count)
     }
 
     /**
@@ -348,6 +575,8 @@ class StreamTest(
                 val st = streams.getJSONObject(i)
                 sb.append("  ").append(st.getString("lens")).append(": ")
                 sb.append(if (st.has("fps")) "${st.get("fps")} fps (max gap ${st.get("max_gap_ms")} ms)" else "${st.getInt("frames")} frames")
+                val asked = combo.streams[i].let { "${it.width}x${it.height}" }
+                if (st.optString("delivered", asked) != asked) sb.append(" GOT ").append(st.getString("delivered"))
             }
         }
         run.keys().asSequence().firstOrNull { it.startsWith("offset_ms_vs_") }?.let { key ->
@@ -365,6 +594,21 @@ class StreamTest(
 
     companion object {
         val SIZES = listOf(1920 to 1080, 3840 to 2160)
+
+        /**
+         * The combinations we would actually use: main + ultrawide at 4K with the
+         * telephoto at its largest real size (2560x1440), plus fallbacks.
+         */
+        fun mixedCombos(tele: String?, others: List<String>): List<Combo> {
+            if (tele == null) return emptyList()
+            val k4 = { id: String -> Stream(id, 3840, 2160) }
+            val list = mutableListOf<Combo>()
+            for (o in others) list.add(Combo(listOf(k4(o), Stream(tele, 2560, 1440))))
+            list.add(Combo(others.map(k4) + Stream(tele, 2560, 1440)))
+            list.add(Combo(others.map(k4) + Stream(tele, 1920, 1080)))
+            list.add(Combo(others.map { Stream(it, 2560, 1440) } + Stream(tele, 2560, 1440)))
+            return list
+        }
 
         /** Logical alone, each lens alone, every pair, all three; 1080p first, 4K last. */
         fun combos(physical: List<String>): List<Combo> {

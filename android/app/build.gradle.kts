@@ -11,8 +11,13 @@ android {
         applicationId = "io.github.mechanceism.sptcamera"
         minSdk = 31
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2"
+        versionCode = 4
+        versionName = "0.4"
+        // The S23 (and any recent phone) is 64-bit ARM; leaving out the other ABIs
+        // keeps OpenCV's native library from bloating the APK.
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -28,4 +33,8 @@ android {
         jvmTarget = "17"
     }
 }
-// No dependencies: platform APIs only (Camera2, PowerManager, org.json).
+dependencies {
+    // OpenCV's official Android package, the same version as the PC (opencv-python 5.1.0),
+    // so markers and ChArUco boards are detected identically on both.
+    implementation("org.opencv:opencv:5.1.0")
+}

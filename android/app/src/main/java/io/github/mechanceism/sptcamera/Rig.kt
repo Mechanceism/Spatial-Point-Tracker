@@ -1,0 +1,215 @@
+package io.github.mechanceism.sptcamera
+
+import android.annotation.SuppressLint
+import android.graphics.Bitmap
+import android.graphics.ImageFormat
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraMetadata
+import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
+import android.media.ImageReader
+import android.os.Handler
+import android.os.HandlerThread
+import org.opencv.android.Utils
+import org.opencv.core.CvType
+import org.opencv.core.Mat
+import org.opencv.core.Size
+import org.opencv.imgproc.Imgproc
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * The live camera rig: one session on the back logical camera with a YUV stream per
+ * lens. Each lens has its own detection thread that always takes the NEWEST frame
+ * (older frames are dropped, never queued), so latency stays at about one frame.
+ *
+ * Focus per lens: null = continuous autofocus, a number = fixed focus in diopters
+ * (1 / metres). [lockFocus] freezes every lens at its current autofocus distance.
+ */
+class Rig(
+    private val cm: CameraManager,
+    private val logicalId: String,
+    val streams: List<StreamTest.Stream>,
+    boards: List<BoardSpec>,
+    private val listener: Listener,
+    private val log: (String) -> Unit,
+) {
+    class Frame(
+        val stream: StreamTest.Stream,
+        val width: Int,
+        val height: Int,
+        val timestampNs: Long,
+        val detections: Detections,
+        val preview: Bitmap?, // only for the preview stream, at most ~10 per second
+        val previewScale: Float, // preview pixels per image pixel
+    )
+
+    interface Listener {
+        fun onFrame(frame: Frame)
+        fun onError(message: String)
+    }
+
+    /** Running numbers per lens, for the status display. */
+    class Stats {
+        @Volatile var cameraFrames = 0
+        @Volatile var processed = 0
+        @Volatile var detectMsTotal = 0.0
+        @Volatile var delivered: String = "-"
+    }
+
+    private val thread = HandlerThread("spt-rig").apply { start() }
+    private val handler = Handler(thread.looper)
+    private val executor = Executor { handler.post(it) }
+    private val chars = cm.getCameraCharacteristics(logicalId)
+    private val physKeys = chars.availablePhysicalCameraRequestKeys ?: emptyList()
+    val perLensFocus = physKeys.contains(CaptureRequest.LENS_FOCUS_DISTANCE) && physKeys.contains(CaptureRequest.CONTROL_AF_MODE)
+    val autofocusLenses: List<String> = streams.mapNotNull { it.lens }.filter { id ->
+        (cm.getCameraCharacteristics(id)[CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES] ?: IntArray(0))
+            .contains(CameraMetadata.CONTROL_AF_MODE_AUTO)
+    }
+
+    private val readers = streams.map { ImageReader.newInstance(it.width, it.height, ImageFormat.YUV_420_888, 3) }
+    private val workers: List<ExecutorService> = streams.map { Executors.newSingleThreadExecutor() }
+    private val busy = streams.map { AtomicBoolean(false) }
+    private val detectors = arrayOfNulls<Detector>(streams.size)
+    private val boardList = boards
+    val stats = streams.map { Stats() }
+
+    /** Lens -> focus distance it reports right now (diopters). */
+    val reportedFocus = ConcurrentHashMap<String, Float>()
+    @Volatile var focus: Map<String, Float?> = emptyMap()
+        private set
+    @Volatile var previewIndex = 0
+    @Volatile private var lastPreviewNs = 0L
+    private var device: CameraDevice? = null
+    private var session: CameraCaptureSession? = null
+    private val running = AtomicBoolean(false)
+
+    @SuppressLint("MissingPermission")
+    fun start(): Boolean {
+        val opened = CountDownLatch(1)
+        cm.openCamera(logicalId, executor, object : CameraDevice.StateCallback() {
+            override fun onOpened(d: CameraDevice) { device = d; opened.countDown() }
+            override fun onDisconnected(d: CameraDevice) { d.close(); device = null; opened.countDown(); listener.onError("camera disconnected") }
+            override fun onError(d: CameraDevice, error: Int) { d.close(); device = null; opened.countDown(); listener.onError("camera error $error") }
+        })
+        if (!opened.await(10, TimeUnit.SECONDS) || device == null) { log("could not open camera $logicalId"); return false }
+        val d = device!!
+        readers.forEachIndexed { i, reader ->
+            reader.setOnImageAvailableListener({ r ->
+                val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+                stats[i].cameraFrames++
+                if (!running.get() || !busy[i].compareAndSet(false, true)) { img.close(); return@setOnImageAvailableListener }
+                workers[i].execute {
+                    try { process(i, img) } catch (t: Throwable) { log("detect error on ${streams[i].name}: ${t.message}") } finally {
+                        img.close()
+                        busy[i].set(false)
+                    }
+                }
+            }, handler)
+        }
+        val configured = CountDownLatch(1)
+        val outputs = readers.mapIndexed { i, r -> OutputConfiguration(r.surface).apply { streams[i].lens?.let { setPhysicalCameraId(it) } } }
+        d.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outputs, executor,
+            object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(s: CameraCaptureSession) { session = s; configured.countDown() }
+                override fun onConfigureFailed(s: CameraCaptureSession) { configured.countDown() }
+            }))
+        if (!configured.await(10, TimeUnit.SECONDS) || session == null) { log("session not configured"); stop(); return false }
+        running.set(true)
+        setFocus(autofocusLenses.associateWith { null })
+        return true
+    }
+
+    /** Lens -> diopters (null = continuous AF). Lenses not listed keep their setting. */
+    fun setFocus(settings: Map<String, Float?>) {
+        val d = device ?: return
+        val s = session ?: return
+        focus = focus + settings
+        val physical = streams.mapNotNull { it.lens }.toSet()
+        val b = if (perLensFocus) d.createCaptureRequest(CameraDevice.TEMPLATE_RECORD, physical) else d.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+        readers.forEach { b.addTarget(it.surface) }
+        b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+        if ((chars[CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION] ?: IntArray(0)).contains(1)) {
+            b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)
+        }
+        (chars[CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES] ?: emptyArray()).let { ranges ->
+            (ranges.firstOrNull { it.lower == 30 && it.upper == 30 } ?: ranges.filter { it.upper == 30 }.maxByOrNull { it.lower })
+                ?.let { b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+        }
+        fun apply(value: Float?, setMode: (Int) -> Unit, setDist: (Float) -> Unit) {
+            if (value == null) setMode(CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            else { setMode(CameraMetadata.CONTROL_AF_MODE_OFF); setDist(value) }
+        }
+        // The logical request follows the first autofocus lens (the main lens).
+        val first = autofocusLenses.firstOrNull()?.let { focus[it] }
+        apply(first, { b.set(CaptureRequest.CONTROL_AF_MODE, it) }, { b.set(CaptureRequest.LENS_FOCUS_DISTANCE, it) })
+        if (perLensFocus) for (lens in autofocusLenses) {
+            apply(focus[lens], { b.setPhysicalCameraKey(CaptureRequest.CONTROL_AF_MODE, it, lens) },
+                { b.setPhysicalCameraKey(CaptureRequest.LENS_FOCUS_DISTANCE, it, lens) })
+        }
+        s.setRepeatingRequest(b.build(), object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(cs: CameraCaptureSession, req: CaptureRequest, res: TotalCaptureResult) {
+                for ((id, pr) in res.physicalCameraTotalResults) {
+                    pr.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { reportedFocus[id] = it }
+                }
+            }
+        }, handler)
+    }
+
+    /** Freeze every autofocus lens at the distance it is focused at now. */
+    fun lockFocus() = setFocus(autofocusLenses.associateWith { reportedFocus[it] })
+
+    fun unlockFocus() = setFocus(autofocusLenses.associateWith { null })
+
+    val focusLocked: Boolean get() = autofocusLenses.isNotEmpty() && autofocusLenses.all { focus[it] != null }
+
+    private fun process(i: Int, img: android.media.Image) {
+        val det = detectors[i] ?: Detector(boardList).also { detectors[i] = it }
+        val plane = img.planes[0]
+        val gray = Mat(img.height, img.width, CvType.CV_8UC1, plane.buffer, plane.rowStride.toLong())
+        val detections = det.detect(gray)
+        val st = stats[i]
+        st.processed++
+        st.detectMsTotal += detections.detectMs
+        st.delivered = "${img.width}x${img.height}"
+        var bmp: Bitmap? = null
+        var scale = 1f
+        val now = System.nanoTime()
+        if (i == previewIndex && now - lastPreviewNs > 90_000_000L) {
+            lastPreviewNs = now
+            scale = 960f / img.width
+            val small = Mat()
+            Imgproc.resize(gray, small, Size(960.0, (img.height * scale).toDouble()), 0.0, 0.0, Imgproc.INTER_AREA)
+            val rgba = Mat()
+            Imgproc.cvtColor(small, rgba, Imgproc.COLOR_GRAY2RGBA)
+            bmp = Bitmap.createBitmap(rgba.cols(), rgba.rows(), Bitmap.Config.ARGB_8888)
+            Utils.matToBitmap(rgba, bmp)
+            small.release(); rgba.release()
+        }
+        gray.release()
+        listener.onFrame(Frame(streams[i], img.width, img.height, img.timestamp, detections, bmp, scale))
+    }
+
+    fun stop() {
+        running.set(false)
+        try { session?.stopRepeating() } catch (_: Exception) {}
+        session?.close(); session = null
+        device?.close(); device = null
+        workers.forEach { it.shutdown() }
+        workers.forEach { it.awaitTermination(2, TimeUnit.SECONDS) }
+        readers.forEach { it.close() }
+        thread.quitSafely()
+    }
+}

@@ -239,6 +239,6 @@ def test_phone_camera_sets_focus(focus, expected):
     cam = PhoneCamera("phone:main", link=PhoneLink(port=app.port, forward=False, log=lambda s: None),
                       log=lambda s: None, focus=focus, focus_settle=0.0).start(timeout=3)
     assert cam.focus_locked and cam.focus_d == 2.5
-    assert expected in app.commands
+    assert wait_for(lambda: expected in app.commands)
     assert wait_for(lambda: cam._number >= 6)
     cam.stop()

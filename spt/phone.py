@@ -468,3 +468,125 @@ class PhoneCamera:
 
     def __exit__(self, *exc) -> None:
         self.stop()
+
+
+@dataclass
+class PhoneGroup:
+    """Several lenses' detections of the same moment (frames with one timestamp)."""
+
+    t_ns: int
+    number: int
+    time: float
+    observed: dict[str, Observed]  # lens -> its detections
+    image: np.ndarray | None = None  # preview of the preview lens, for the window
+
+
+class PhoneMulti:
+    """Several lenses of the phone at once, paired by timestamp.
+
+    The app picks the same frames on every lens (rate cap by timestamp slot), so each
+    frame time arrives from every lens; a group is handed out once all lenses have
+    reported it, or after ``group_wait`` seconds with whatever arrived.
+    ``focus``: lens (id or role) -> diopters, from each lens's calibration.
+    """
+
+    def __init__(self, lenses: list[str], focus: dict[str, float] | None = None, port: int = DEFAULT_PORT,
+                 max_fps: float = 10.0, preview: str | None = None, group_wait: float = 0.4,
+                 boards: list[BoardSpec] | None = None, log: Callable[[str], None] = print,
+                 link: PhoneLink | None = None):
+        self.queries = lenses
+        self.focus_q = focus or {}
+        self.max_fps = max_fps
+        self.preview_q = preview
+        self.group_wait = group_wait
+        self.boards = boards if boards is not None else list(BOARDS.values())
+        self.log = log
+        self.link = link or PhoneLink(port=port, log=log)
+        self.link.on_frame = self._on_frame
+        self.lenses: list[str] = []
+        self.roles: dict[str, str | None] = {}
+        self.preview: str | None = None
+        self.sizes: dict[str, tuple[int, int]] = {}
+        self.complete = 0  # groups with every lens
+        self.partial = 0
+        self._cond = threading.Condition()
+        self._pending: dict[int, tuple[float, dict[str, PhoneFrame]]] = {}
+        self._ready: deque[PhoneGroup] = deque(maxlen=30)
+        self._number = 0
+
+    @property
+    def name(self) -> str:
+        return "phone:" + "+".join(self.lenses)
+
+    def start(self, timeout: float = 20.0) -> "PhoneMulti":
+        hello = self.link.connect()
+        self.lenses = [resolve_lens(hello, q) for q in self.queries]
+        self.roles = {str(c["id"]): c.get("role_guess") for c in hello.get("lenses", []) if str(c.get("id")) in self.lenses}
+        self.preview = resolve_lens(hello, self.preview_q) if self.preview_q else self.lenses[0]
+        self.link.send_boards(self.boards)
+        self.link.set_detector(max_fps=self.max_fps)
+        self.link.set_pc_preview(self.preview, 5.0, 960)
+        self.link.set_streams(self.lenses)
+        self.log(f"phone lenses {', '.join(f'{l} ({self.roles.get(l)})' for l in self.lenses)}: waiting for frames...")
+        try:
+            self.read(timeout=timeout)
+            for q, d in self.focus_q.items():
+                lens = resolve_lens(hello, q)
+                self.link.set_focus(lens, float(d))
+                self.log(f"lens {lens}: focus set to {d:.3f} D ({1 / d:.2f} m)")
+            if self.focus_q:
+                time.sleep(1.0)  # let the lenses arrive
+        except TimeoutError:
+            self.stop()
+            raise
+        return self
+
+    def _on_frame(self, frame: PhoneFrame) -> None:
+        if frame.lens not in self.lenses:
+            return
+        with self._cond:
+            self.sizes[frame.lens] = frame.image_size
+            self._pending.setdefault(frame.t_ns, (time.monotonic(), {}))[1][frame.lens] = frame
+            now = time.monotonic()
+            done = sorted(t for t, (t0, fr) in self._pending.items()
+                          if len(fr) == len(self.lenses) or now - t0 > self.group_wait)
+            for t in done:
+                _, fr = self._pending.pop(t)
+                if len(fr) == len(self.lenses):
+                    self.complete += 1
+                else:
+                    self.partial += 1
+                self._number += 1
+                self._ready.append(PhoneGroup(t, self._number, now,
+                                              {k: Observed(f.boards, f.image_size) for k, f in fr.items()}))
+            if done:
+                self._cond.notify_all()
+
+    def read(self, after: int = 0, timeout: float = 5.0) -> PhoneGroup:
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while not self._ready or self._ready[-1].number <= after:
+                left = deadline - time.monotonic()
+                if left <= 0 or self.link.error:
+                    raise TimeoutError(f"no frames from the phone ({self.link.error or 'timeout'})")
+                self._cond.wait(min(left, 0.2))
+            group = self._ready[-1]
+        group.image = self._picture()
+        return group
+
+    def _picture(self) -> np.ndarray | None:
+        prev = self.link.previews.get(self.preview)
+        if prev is None:
+            return None
+        small = cv2.imdecode(np.frombuffer(prev[3], np.uint8), cv2.IMREAD_GRAYSCALE)
+        if small is None:
+            return None
+        return cv2.cvtColor(cv2.resize(small, (prev[1], prev[2]), interpolation=cv2.INTER_LINEAR), cv2.COLOR_GRAY2BGR)
+
+    def stop(self) -> None:
+        try:
+            self.link.set_pc_preview(None)
+            self.link.set_streams(None)  # give the phone's Live screen all lenses back
+        except Exception:  # noqa: BLE001 - best effort on the way out
+            pass
+        self.link.close()

@@ -262,3 +262,17 @@ def test_focus_lock_waits_for_the_board():
         cam2.link.set_streams(["5"])
         cam2._wait_for_board("target", 0.1, timeout=0.5)
     cam2.link.close()
+
+
+def test_phone_multi_groups_lenses_by_timestamp():
+    from spt.phone import PhoneMulti
+    app = FakeApp()  # sends lens 2 and lens 5 frames with the same timestamps
+    multi = PhoneMulti(["main", "ultrawide"], link=PhoneLink(port=app.port, forward=False, log=lambda s: None),
+                       log=lambda s: None).start(timeout=3)
+    assert multi.lenses == ["5", "2"] and multi.preview == "5"
+    g = multi.read(timeout=3)
+    assert set(g.observed) == {"5", "2"}
+    assert g.observed["5"].boards["reference"].ids.tolist() == list(range(8))
+    assert wait_for(lambda: multi.complete >= 5)
+    assert multi.partial == 0
+    multi.stop()

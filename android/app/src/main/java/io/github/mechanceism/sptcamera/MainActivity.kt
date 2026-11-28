@@ -293,5 +293,5 @@ class MainActivity : Activity() {
 }
 
 object BuildConfigInfo {
-    const val VERSION = "0.9"
+    const val VERSION = "0.10"
 }

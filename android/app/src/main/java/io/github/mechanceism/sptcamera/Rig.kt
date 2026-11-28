@@ -102,7 +102,7 @@ class Rig(
     @Volatile private var boardGen = 0
     @Volatile var detectorConfig = DetectorConfig()
         private set
-    private val lastStart = LongArray(streams.size)
+    private val lastSlot = LongArray(streams.size) { -1L }
     private val emptySince = LongArray(streams.size) // when a lens last stopped seeing markers (0 = sees some)
 
     /** Lens whose JPEG preview goes to the PC, how often and how wide (null = none). */
@@ -142,11 +142,13 @@ class Rig(
                 // A lens that has seen nothing for a second only looks now and then.
                 val searching = emptySince[i] != 0L && now - emptySince[i] > 1_000_000_000L
                 val fps = if (searching) minOf(detectorConfig.searchFps, detectorConfig.maxFps) else detectorConfig.maxFps
-                val minGap = (1e9 / fps.coerceAtLeast(0.1)).toLong()
-                if (!running.get() || now - lastStart[i] < minGap || !busy[i].compareAndSet(false, true)) {
+                // Rate cap by time slot of the frame's own timestamp. All lenses share
+                // timestamps, so they pick the SAME frames and the PC can pair them.
+                val slot = img.timestamp / (1e9 / fps.coerceAtLeast(0.1)).toLong()
+                if (!running.get() || slot == lastSlot[i] || !busy[i].compareAndSet(false, true)) {
                     img.close(); return@setOnImageAvailableListener
                 }
-                lastStart[i] = now
+                lastSlot[i] = slot
                 workers[i].execute {
                     try { process(i, img) } catch (t: Throwable) { log("detect error on ${streams[i].name}: ${t.message}") } finally {
                         img.close()

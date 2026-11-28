@@ -34,6 +34,7 @@ class FusedMeasurer:
         self.anchor = anchor or list(measurers)  # whose poses drive the stillness check, in order
         self.min_cameras = min_cameras
         self.last: dict[str, ViewResult] = {}
+        self.last_reasons: dict[str, str] = {}  # camera -> why it gave nothing, last frame
 
     @property
     def last_detections(self):
@@ -52,6 +53,7 @@ class FusedMeasurer:
             else:
                 results[cam] = r
         self.last = results
+        self.last_reasons = reasons
         if len(results) < self.min_cameras:
             return None, "; ".join(f"{k}: {v}" for k, v in reasons.items()) or "nothing seen"
         w = np.array([self.weights[k] for k in results])

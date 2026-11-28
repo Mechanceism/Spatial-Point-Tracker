@@ -1,10 +1,11 @@
-"""Command line: python -m spt {make-boards,calibrate,measure} ..."""
+﻿"""Command line: python -m spt {make-boards,calibrate,measure} ..."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import re
 import sys
 import threading
 import time
@@ -1191,11 +1192,37 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
           + f". Truth {scene.known_mm():.2f} mm. Hold still to capture, move between captures; q finishes, Esc quits.")
     colors = {"captured": (0, 220, 0), "collecting": (0, 220, 255), "none": (0, 0, 200), "move": (255, 160, 0)}
     message, message_until, last = "", 0.0, 0
+    from collections import Counter
+    missing = {lens: Counter() for lens in lenses}  # lens -> why it gave nothing
+    groups = 0
+    cancelled = False
     try:
         while True:
-            group = multi.read(after=last, timeout=5.0)
+            try:
+                group = multi.read(after=last, timeout=2.0)
+            except TimeoutError:
+                if multi.link.error:
+                    print(f"link to the phone lost: {multi.link.error} - saving what was measured")
+                    break
+                # The phone pauses its camera when warm: wait for it instead of giving up.
+                st = multi.link.status or {}
+                wait = np.full((480, 960, 3), 40, np.uint8)
+                wait = _with_panel(wait, [f"no frames from the phone - camera: {st.get('camera', '?')}",
+                                          f"thermal: {st.get('thermal', {})}",
+                                          "waiting (the watchdog resumes when cool)   q finish and save   Esc quit"])
+                cv2.imshow(window, wait)
+                key = cv2.waitKey(50) & 0xFF
+                if key == 27:
+                    cancelled = True
+                    break
+                if key == ord("q"):
+                    break
+                continue
             last = group.number
+            groups += 1
             step = session.update(f"g{group.number}", group.observed)
+            for lens, why in fused.last_reasons.items():
+                missing[lens][re.sub(r"\d+(\.\d+)?", "#", why)] += 1  # numbers blanked so reasons group
             if step.state == "captured":
                 c = step.capture
                 parts = [f"fused {np.linalg.norm(c.mean - truth):.2f}"]
@@ -1246,13 +1273,18 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
             cv2.imshow(window, out)
             key = cv2.waitKey(1) & 0xFF
             if key == 27 or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
-                print("cancelled, nothing saved")
-                return 1
+                cancelled = True
+                break
             if key == ord("q"):
                 break
+    except Exception as e:  # noqa: BLE001 - keep what was measured
+        print(f"error: {e!r} - saving what was measured")
     finally:
         multi.stop()
         cv2.destroyAllWindows()
+    if cancelled:
+        print("cancelled, nothing saved")
+        return 1
 
     # per-frame CSV: every lens's point and the fused one
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1285,6 +1317,10 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
     for row in cmp["rows"]:
         print(f"  {row['capture']:7d}   " + "  ".join(
             f"{np.linalg.norm(row[k]):12.2f}" if k in row else f"{'-':>12}" for k in [*lenses, "fused"]))
+    print(f"  frame groups {groups}; per lens, frames with no result and why:")
+    for lens in lenses:
+        why = ", ".join(f"{k} {v}" for k, v in missing[lens].most_common(4)) or "-"
+        print(f"    lens {lens} ({multi.roles.get(lens)}): {sum(missing[lens].values())} of {groups}: {why}")
     print(f"\nwrote {csv_path}")
     return 0
 

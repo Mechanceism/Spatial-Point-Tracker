@@ -72,7 +72,10 @@ class LiveMeasureSession:
         if result is None:
             self._collecting, self._prev = [], None
             return LiveStep("none", reason=why)
-        moving = self._prev is None or np.linalg.norm(result.ref.t - self._prev.ref.t) > self.still_mm
+        motion = getattr(result, "motion_mm", None)  # several cameras: each against its own last frame
+        if motion is None:
+            motion = np.inf if self._prev is None else np.linalg.norm(result.ref.t - self._prev.ref.t)
+        moving = motion > self.still_mm
         self._prev = result
         if not self._armed and self._moved_from_anchor(result):
             self._armed = True

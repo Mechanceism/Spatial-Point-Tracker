@@ -30,6 +30,10 @@ class FusedResult(ViewResult):
     points: dict[str, np.ndarray] = field(default_factory=dict)  # camera -> its own point
     rms_px: dict[str, float] = field(default_factory=dict)  # camera -> worse of its two board fits
     reasons: dict[str, str] = field(default_factory=dict)  # camera -> why it gave nothing
+    # Largest reference-board motion since the same camera's previous frame (mm), over
+    # the cameras that saw it both times; None if none did. The capture logic uses it
+    # instead of comparing poses that may come from different cameras.
+    motion_mm: float | None = None
 
 
 class FusedMeasurer:
@@ -49,6 +53,7 @@ class FusedMeasurer:
         self.min_cameras = min_cameras
         self.last: dict[str, ViewResult] = {}
         self.last_reasons: dict[str, str] = {}  # camera -> why it gave nothing, last frame
+        self._prev_t: dict[str, np.ndarray] = {}  # camera -> its last reference-board position
 
     @property
     def last_detections(self):
@@ -68,6 +73,12 @@ class FusedMeasurer:
                 results[cam] = r
         self.last = results
         self.last_reasons = reasons
+        moves = [float(np.linalg.norm(r.ref.t - self._prev_t[k])) for k, r in results.items() if k in self._prev_t]
+        for k in self.measurers:  # a camera that lost the board starts over
+            if k in results:
+                self._prev_t[k] = np.asarray(results[k].ref.t, float)
+            else:
+                self._prev_t.pop(k, None)
         if len(results) < self.min_cameras:
             return None, "; ".join(f"{k}: {v}" for k, v in reasons.items()) or "nothing seen"
         point = fuse_points(results, self.weights, self.weighting, self.floor_mm)
@@ -79,6 +90,7 @@ class FusedMeasurer:
             points={k: r.point for k, r in results.items()},
             rms_px={k: max(r.ref.rms_px, r.tgt.rms_px) for k, r in results.items()},
             reasons=reasons,
+            motion_mm=max(moves) if moves else None,
         ), ""
 
 

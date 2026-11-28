@@ -351,3 +351,11 @@ covariance weighting cancels them (depth 0.18 / 0.25 -> 0.08 mm). Neither camera
 a notable mean bias this time (|mean| <= 0.08 mm), so the first run's phone offset
 depended on its viewing angle. Both cameras still lost the target board in about half
 the frame groups: keep the boards inside both views.
+
+Fix after the second run: captures took several seconds of retries although nothing
+moved. The stillness check compared the reference-board pose with the previous
+frame's, and with several cameras that pose came from whichever camera saw both
+boards: when one dropped a board, the comparison jumped to the other camera's view
+(hundreds of mm apart) and restarted the count. Now each camera is compared with its
+own previous frame (`FusedResult.motion_mm`), and `measure-multi` averages 8 frame
+groups per capture (default; ~1.3 s at 6 detections/s).

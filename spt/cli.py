@@ -1438,7 +1438,7 @@ def build_parser() -> argparse.ArgumentParser:
     mm.add_argument("--floor-mm", type=float, default=0.25,
                     help="uncertainty every camera gets on top of its fit (systematic errors), mm (default 0.25)")
     mm.add_argument("--scene", default="output/scene_measure.json", help="scene from 'show --layout measure'")
-    mm.add_argument("--frames", type=int, default=15, help="frame groups averaged per capture")
+    mm.add_argument("--frames", type=int, default=8, help="frame groups averaged per capture (default 8)")
     mm.add_argument("--max-rms", type=float, default=1.0, help="reject a lens's frame whose board fit is worse (px)")
     mm.add_argument("--csv", help="per-frame results (default output/measure_multi_<time>.csv)")
     mm.add_argument("--monitor", type=int)

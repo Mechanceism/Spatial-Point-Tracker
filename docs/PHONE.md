@@ -66,6 +66,8 @@ at the top of its page).
 | `adb exec-out run-as io.github.mechanceism.sptcamera cat files/lens_report.json` | copies a result file out of the app's private folder |
 | `adb shell am force-stop io.github.mechanceism.sptcamera` | closes the app |
 | `adb uninstall io.github.mechanceism.sptcamera` | removes the app and its files |
+| `adb forward tcp:8765 localabstract:sptcamera` | links PC port 8765 to the app's local socket over USB (done by `python -m spt phone`) |
+| `adb forward --remove tcp:8765` | removes that link (done on exit) |
 | `adb kill-server` | stops adb on the PC |
 
 ## Using the test tool

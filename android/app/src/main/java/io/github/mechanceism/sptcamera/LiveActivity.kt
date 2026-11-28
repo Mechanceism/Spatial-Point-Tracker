@@ -20,6 +20,8 @@ import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import org.json.JSONArray
+import org.json.JSONObject
 import org.opencv.android.OpenCVLoader
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -29,6 +31,9 @@ import java.util.concurrent.Executors
  * phone, and shows one lens with the detections drawn on top. Tap "Lens" to switch
  * the preview, "Lock focus" to freeze the autofocus lenses where they are.
  * The camera stops when the screen is left, and pauses when the phone gets warm.
+ *
+ * While this screen is open, a PC can connect over USB (see [Server]) and receives
+ * every frame's detections; it can also lock / set focus and send board definitions.
  */
 class LiveActivity : Activity(), Rig.Listener {
 
@@ -46,6 +51,9 @@ class LiveActivity : Activity(), Rig.Listener {
     private var lastTick = 0L
     private var pausedHot = false
     @Volatile private var status = "starting..."
+    private var server: Server? = null
+    @Volatile private var lensInfo: JSONObject = JSONObject()
+    @Volatile private var boards: List<BoardSpec> = BoardSpec.DEFAULTS
 
     private val markerPaint = Paint().apply { color = Color.GREEN; style = Paint.Style.STROKE; strokeWidth = 2f; isAntiAlias = true }
     private val textPaint = Paint().apply { color = Color.GREEN; textSize = 18f; isAntiAlias = true }
@@ -83,6 +91,11 @@ class LiveActivity : Activity(), Rig.Listener {
         } else {
             startRig()
         }
+        try {
+            server = Server(::hello, ::command, ::log).also { it.start() }
+        } catch (e: Exception) {
+            status = "PC link unavailable: ${e.message}"
+        }
         ui.post(tick)
     }
 
@@ -90,6 +103,9 @@ class LiveActivity : Activity(), Rig.Listener {
         super.onPause()
         ui.removeCallbacks(tick)
         stopRig() // never use the camera off screen
+        val s = server
+        server = null
+        if (s != null) control.execute { s.stop() }
     }
 
     override fun onDestroy() {
@@ -103,10 +119,11 @@ class LiveActivity : Activity(), Rig.Listener {
             val cm = getSystemService(CameraManager::class.java)
             val (logical, physical) = LensReport.backLogical(cm) ?: run { status = "no back multi-camera"; return@execute }
             roles = LensReport.roles(cm)
+            lensInfo = LensReport.build(cm)
             // Every lens asked for 4K: main and ultrawide deliver 3840x2160, the tele its
             // full sensor at 1920x1440. (Main 4K + tele 2560x1440 kills the camera.)
             val streams = physical.map { StreamTest.Stream(it, 3840, 2160) }
-            val r = Rig(cm, logical, streams, BoardSpec.DEFAULTS, this, ::log)
+            val r = Rig(cm, logical, streams, boards, this, ::log)
             if (r.start()) {
                 rig = r
                 status = "running" + if (r.perLensFocus) "" else " (focus is shared by all lenses)"
@@ -139,6 +156,18 @@ class LiveActivity : Activity(), Rig.Listener {
         val r = rig ?: return
         val idx = r.streams.indexOf(frame.stream)
         latest[idx] = frame
+        server?.let { srv ->
+            if (srv.connected) {
+                val lens = frame.stream.lens
+                val msg = frame.detections.json().put("type", "frame").put("lens", lens ?: "logical")
+                    .put("role", roles[lens] ?: JSONObject.NULL).put("t_ns", frame.timestampNs)
+                    .put("width", frame.width).put("height", frame.height)
+                if (lens != null && lens in r.autofocusLenses) {
+                    msg.put("focus_d", r.reportedFocus[lens]?.toDouble() ?: JSONObject.NULL).put("focus_locked", r.focus[lens] != null)
+                }
+                srv.send(msg)
+            }
+        }
         val bmp = frame.preview ?: return
         val s = frame.previewScale
         val c = Canvas(bmp)
@@ -169,6 +198,47 @@ class LiveActivity : Activity(), Rig.Listener {
             updateInfo()
             ui.postDelayed(this, 500)
         }
+    }
+
+    /** First message to a newly connected PC: what is streaming and how. */
+    private fun hello(): JSONObject {
+        val r = rig
+        val o = JSONObject().put("app", "SPT Camera").put("version", BuildConfigInfo.VERSION)
+            .put("device", android.os.Build.MODEL).put("boards", JSONArray(boards.map { it.json() }))
+            .put("lenses", lensInfo.optJSONArray("cameras") ?: JSONArray())
+        if (r != null) {
+            o.put("streams", JSONArray(r.streams.map {
+                JSONObject().put("lens", it.lens ?: "logical").put("role", roles[it.lens] ?: JSONObject.NULL)
+                    .put("requested", JSONArray(listOf(it.width, it.height)))
+            }))
+            o.put("autofocus", JSONArray(r.autofocusLenses)).put("per_lens_focus", r.perLensFocus)
+        }
+        return o
+    }
+
+    /** A command from the PC; returns the reply. */
+    private fun command(c: JSONObject): JSONObject? {
+        val r = rig
+        val reply = JSONObject().put("type", "reply").put("cmd", c.optString("cmd"))
+        when (c.optString("cmd")) {
+            "ping" -> {}
+            "lock_focus" -> { r ?: return reply.put("ok", false).put("message", "camera not running"); r.lockFocus() }
+            "unlock_focus" -> { r ?: return reply.put("ok", false).put("message", "camera not running"); r.unlockFocus() }
+            "focus" -> {
+                r ?: return reply.put("ok", false).put("message", "camera not running")
+                val lens = c.getString("lens")
+                r.setFocus(mapOf(lens to if (c.isNull("diopters")) null else c.getDouble("diopters").toFloat()))
+            }
+            "boards" -> {
+                val arr = c.getJSONArray("boards")
+                boards = (0 until arr.length()).map { BoardSpec.fromJson(arr.getJSONObject(it)) }
+                r?.setBoards(boards)
+                log("boards from the PC: ${boards.joinToString { it.name }}")
+            }
+            "preview" -> { r ?: return reply.put("ok", false); r.previewIndex = r.streams.indexOfFirst { it.lens == c.getString("lens") }.coerceAtLeast(0) }
+            else -> return reply.put("ok", false).put("message", "unknown command")
+        }
+        return reply.put("ok", true)
     }
 
     private fun lensName(lens: String?) = "${roles[lens] ?: "lens"} ${lens ?: "logical"}"
@@ -219,6 +289,13 @@ class LiveActivity : Activity(), Rig.Listener {
             }
         }
         sb.append(snap.text()).append(if (pausedHot) "  PAUSED (warm)" else "").append('\n').append(status)
+        server?.let { srv ->
+            sb.append(if (srv.connected) "   PC connected" else "   PC: not connected")
+            if (srv.dropped > 0) sb.append(" (").append(srv.dropped).append(" dropped)")
+            if (srv.connected) srv.send(JSONObject().put("type", "status").put("thermal", snap.json())
+                .put("camera", if (r != null) "running" else if (pausedHot) "paused_warm" else "stopped")
+                .put("focus_locked", r?.focusLocked ?: false).put("dropped", srv.dropped))
+        }
         info.text = sb.toString()
     }
 

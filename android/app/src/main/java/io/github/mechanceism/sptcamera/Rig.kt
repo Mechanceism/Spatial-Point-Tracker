@@ -83,7 +83,10 @@ class Rig(
     private val workers: List<ExecutorService> = streams.map { Executors.newSingleThreadExecutor() }
     private val busy = streams.map { AtomicBoolean(false) }
     private val detectors = arrayOfNulls<Detector>(streams.size)
-    private val boardList = boards
+    private val detectorGen = IntArray(streams.size)
+    @Volatile var boards: List<BoardSpec> = boards
+        private set
+    @Volatile private var boardGen = 0
     val stats = streams.map { Stats() }
 
     /** Lens -> focus distance it reports right now (diopters). */
@@ -136,7 +139,8 @@ class Rig(
     fun setFocus(settings: Map<String, Float?>) {
         val d = device ?: return
         val s = session ?: return
-        focus = focus + settings
+        // The S23 ignores a focus distance of exactly 0 (infinity) and stays where it was.
+        focus = focus + settings.mapValues { (_, v) -> v?.coerceAtLeast(MIN_DIOPTERS) }
         val physical = streams.mapNotNull { it.lens }.toSet()
         val b = if (perLensFocus) d.createCaptureRequest(CameraDevice.TEMPLATE_RECORD, physical) else d.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
         readers.forEach { b.addTarget(it.surface) }
@@ -168,6 +172,12 @@ class Rig(
         }, handler)
     }
 
+    /** Replace the board definitions (e.g. sent by the PC); each detection thread picks them up. */
+    fun setBoards(list: List<BoardSpec>) {
+        boards = list
+        boardGen++
+    }
+
     /** Freeze every autofocus lens at the distance it is focused at now. */
     fun lockFocus() = setFocus(autofocusLenses.associateWith { reportedFocus[it] })
 
@@ -176,7 +186,11 @@ class Rig(
     val focusLocked: Boolean get() = autofocusLenses.isNotEmpty() && autofocusLenses.all { focus[it] != null }
 
     private fun process(i: Int, img: android.media.Image) {
-        val det = detectors[i] ?: Detector(boardList).also { detectors[i] = it }
+        if (detectors[i] == null || detectorGen[i] != boardGen) {
+            detectors[i] = Detector(boards)
+            detectorGen[i] = boardGen
+        }
+        val det = detectors[i]!!
         val plane = img.planes[0]
         val gray = Mat(img.height, img.width, CvType.CV_8UC1, plane.buffer, plane.rowStride.toLong())
         val detections = det.detect(gray)
@@ -200,6 +214,11 @@ class Rig(
         }
         gray.release()
         listener.onFrame(Frame(streams[i], img.width, img.height, img.timestamp, detections, bmp, scale))
+    }
+
+    companion object {
+        /** 100 m: the closest thing to infinity the lenses accept. */
+        const val MIN_DIOPTERS = 0.01f
     }
 
     fun stop() {

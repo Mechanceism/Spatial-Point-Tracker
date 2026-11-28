@@ -1008,6 +1008,69 @@ def _measure_verdict(s: Summary, target_mm: float) -> str:
     return "\n  ".join(parts)
 
 
+def cmd_phone(args: argparse.Namespace) -> int:
+    """Connect to the SPT Camera app (Live screen) over USB and show what each lens sees."""
+    from .phone import PhoneLink
+
+    record = None
+    if args.record:
+        out = Path("output/phone")
+        out.mkdir(parents=True, exist_ok=True)
+        record = out / f"stream_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
+    link = PhoneLink(port=args.port, record=record)
+    try:
+        hello = link.connect()
+    except Exception as e:  # noqa: BLE001
+        print(f"Could not connect: {e}")
+        link.close()
+        return 1
+    try:
+        print(f"Connected: {hello.get('app')} {hello.get('version')} on {hello.get('device')}")
+        lenses = {c["id"]: c for c in hello.get("lenses", [])}
+        for st in hello.get("streams", []):
+            info = lenses.get(st["lens"], {})
+            print(f"  lens {st['lens']:>2} {str(st.get('role')):10} requested {st['requested'][0]}x{st['requested'][1]}"
+                  f"  nominal fx {info.get('fx_px_3840', '?')} px @3840, HFOV {info.get('hfov_deg', '?')} deg")
+        print(f"  autofocus lenses {hello.get('autofocus')}, per-lens focus: {hello.get('per_lens_focus')}")
+        link.send_boards(list(BOARDS.values()))
+        print(f"  boards sent: {', '.join(BOARDS)}" + (f"; recording to {record}" if record else ""))
+        if args.lock_focus:
+            print(f"  locking focus in {args.lock_focus:g} s (autofocus settles first)")
+        print("Ctrl+C to stop.\n")
+        t0 = time.monotonic()
+        locked = False
+        last = t0
+        while args.seconds is None or time.monotonic() - t0 < args.seconds:
+            time.sleep(1.0)
+            if link.error:
+                print(f"Link lost: {link.error}")
+                return 1
+            if args.lock_focus and not locked and time.monotonic() - t0 >= args.lock_focus:
+                link.lock_focus()
+                locked = True
+                print("  -> focus locked")
+            now = time.monotonic()
+            counts = link.take_counts()
+            dt = now - last
+            last = now
+            parts = []
+            for lens, f in sorted(link.latest.items()):
+                boards = " ".join(f"{name[:3]} {len(d)}" for name, d in f.boards.items()) or "-"
+                focus = ""
+                if f.focus_d is not None:
+                    focus = f" f {f.focus_d:.2f}D{' L' if f.focus_locked else ''}"
+                parts.append(f"{lens}:{f.width}x{f.height} {counts.get(lens, 0) / dt:4.1f}fps "
+                             f"{f.detect_ms:3.0f}ms mk {len(f.markers):2d} {boards}{focus}")
+            st = link.status or {}
+            temp = st.get("thermal", {}).get("battery_c", "?")
+            print(f"[{now - t0:5.0f}s] " + " | ".join(parts) + f" | {temp} C {st.get('camera', '')}")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        link.close()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m spt", description="Spatial Point Tracker phase 0 tools")
     sub = p.add_subparsers(dest="command", required=True)
@@ -1117,6 +1180,13 @@ def build_parser() -> argparse.ArgumentParser:
     dg.add_argument("--max-side", type=int, default=1800)
     dg.add_argument("--no-mirror", action="store_true")
     dg.set_defaults(func=cmd_digitize)
+
+    ph = sub.add_parser("phone", help="connect to the SPT Camera app (Live screen) over USB and show its detections")
+    ph.add_argument("--port", type=int, default=8765, help="PC port forwarded to the app (default 8765)")
+    ph.add_argument("--seconds", type=float, help="stop after this long (default: until Ctrl+C)")
+    ph.add_argument("--lock-focus", type=float, metavar="S", help="lock focus S seconds after connecting")
+    ph.add_argument("--record", action="store_true", help="save every message to output/phone/stream_<time>.jsonl")
+    ph.set_defaults(func=cmd_phone)
 
     mo = sub.add_parser("monitors", help="list monitors (for show)")
     mo.set_defaults(func=cmd_monitors)

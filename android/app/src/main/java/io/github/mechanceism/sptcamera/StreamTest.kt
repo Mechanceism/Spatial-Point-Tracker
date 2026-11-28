@@ -361,7 +361,8 @@ class StreamTest(
                     b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)
                 }
                 fixed30(chars)?.let { b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
-                val logicalD = if (settings.containsKey("logical")) settings["logical"] else settings.values.firstOrNull()
+                // A distance of exactly 0 is ignored by the S23 (the lens stays put): use 100 m.
+                val logicalD = (if (settings.containsKey("logical")) settings["logical"] else settings.values.firstOrNull())?.coerceAtLeast(0.01f)
                 if (logicalD == null) {
                     b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
                 } else {
@@ -369,7 +370,7 @@ class StreamTest(
                     b.set(CaptureRequest.LENS_FOCUS_DISTANCE, logicalD)
                 }
                 if (perLens) for (lens in focusLenses) {
-                    val d = if (settings.containsKey(lens)) settings[lens] else logicalD
+                    val d = (if (settings.containsKey(lens)) settings[lens] else logicalD)?.coerceAtLeast(0.01f)
                     if (d == null) {
                         b.setPhysicalCameraKey(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO, lens)
                     } else {

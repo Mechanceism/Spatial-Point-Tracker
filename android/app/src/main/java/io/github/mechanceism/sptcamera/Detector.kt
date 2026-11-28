@@ -78,29 +78,31 @@ class Detector(boards: List<BoardSpec>) {
         val corners = ArrayList<Mat>()
         val idsMat = Mat()
         markerDetector.detectMarkers(gray, corners, idsMat)
-        val n = idsMat.rows()
-        val ids = IntArray(n)
-        if (n > 0) idsMat.get(0, 0, ids)
-        val flat = corners.map { m -> FloatArray(8).also { m.get(0, 0, it) } }
+        // OpenCV 5's Java binding returns the IDs as one row (1 x n), so count elements,
+        // not rows. Keep IDs and corners paired even if the two ever disagree.
+        val n = minOf(idsMat.total().toInt(), corners.size)
+        val ids = IntArray(idsMat.total().toInt())
+        if (ids.isNotEmpty()) idsMat.get(0, 0, ids)
+        val flat = corners.take(n).map { m -> FloatArray(8).also { m.get(0, 0, it) } }
         val boards = HashMap<String, Pair<IntArray, FloatArray>>()
         for ((spec, detector, range) in boardDetectors) {
-            val pick = ids.indices.filter { ids[it] in range }
+            val pick = (0 until n).filter { ids[it] in range }
             if (pick.size < 2) continue
             val subCorners = ArrayList<Mat>(pick.map { corners[it] })
             val subIds = Mat(pick.size, 1, CvType.CV_32S).apply { put(0, 0, pick.map { ids[it] }.toIntArray()) }
             val chCorners = Mat()
             val chIds = Mat()
             detector.detectBoard(gray, chCorners, chIds, subCorners, subIds)
-            val k = chIds.rows()
+            val k = minOf(chIds.total().toInt(), chCorners.total().toInt())
             if (k > 0) {
-                val cid = IntArray(k).also { chIds.get(0, 0, it) }
-                val cxy = FloatArray(2 * k).also { chCorners.get(0, 0, it) }
-                boards[spec.name] = cid to cxy
+                val cid = IntArray(chIds.total().toInt()).also { chIds.get(0, 0, it) }
+                val cxy = FloatArray(2 * chCorners.total().toInt()).also { chCorners.get(0, 0, it) }
+                boards[spec.name] = cid.copyOf(k) to cxy.copyOf(2 * k)
             }
             subIds.release(); chCorners.release(); chIds.release()
         }
         idsMat.release()
         corners.forEach { it.release() }
-        return Detections(ids, flat, boards, (System.nanoTime() - t0) / 1e6)
+        return Detections(ids.copyOf(n), flat, boards, (System.nanoTime() - t0) / 1e6)
     }
 }

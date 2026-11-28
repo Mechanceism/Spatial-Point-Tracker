@@ -23,7 +23,7 @@ offset, the hand-measured guess, and the pivot residual.
 python -m spt probe-image                       # S23 defaults: 1080 x 2340, 425 ppi
 ```
 
-This writes `output/probe_s23.png` and `output/probe_s23.probe.json`. The board is
+This writes `output/probes/probe_s23.png` and `output/probes/probe_s23.probe.json`. The board is
 4 x 8 squares of 250 px (about 15 mm), marker IDs 40-55, so it never clashes with
 the reference (0-16) or target (20-29) boards.
 
@@ -37,8 +37,8 @@ The gallery may scale the image slightly, and a scale error becomes a distance e
 between inner corners **6 squares down** (~90 mm), and 2 across (~30 mm) as a check:
 
 ```
-python -m spt probe-scale --probe output/probe_s23.probe.json --measured-mm 89.65 --squares 6
-python -m spt probe-scale --probe output/probe_s23.probe.json --ppi 425     # or from the spec sheet
+python -m spt probe-scale --probe output/probes/probe_s23.probe.json --measured-mm 89.65 --squares 6
+python -m spt probe-scale --probe output/probes/probe_s23.probe.json --ppi 425     # or from the spec sheet
 ```
 
 Rescaling also rescales an already calibrated tip by the same factor (exact for a
@@ -49,7 +49,7 @@ rounded.
 ## 3. Pivot calibration
 
 ```
-python -m spt pivot --probe output/probe_s23.probe.json --calib output/nexigo_n930e_fhd_webcam.calib.json --monitor 1
+python -m spt pivot --probe output/probes/probe_s23.probe.json --calib output/calibrations/nexigo_n930e_fhd_webcam.calib.json --monitor 1
 ```
 
 Put the tip in a small **dent** that won't move: a centre-punch mark, a small hole
@@ -64,7 +64,7 @@ point and stay there while you rotate, and the pivot as a magenta cross.
 
 Done (long beep) at 60 samples, 25 degrees of rotation spread, and a residual of 1 mm
 or less. `q` saves the tip into the probe file, and every sampled pose goes to
-`output/pivot_<probe>_<time>.csv`.
+`output/measurements/pivot/pivot_<probe>_<time>.csv`.
 
 First result (S23 + pencil, NexiGo, 2026-11-27): 266 samples, 37 degrees spread, tip at
 (28.4, -70.8, 16.2) mm after rescaling to the spec-sheet 425 ppi (the pencil point was
@@ -77,7 +77,7 @@ markers, and make the marker area at least as large as the tip's distance from i
 
 ```
 python -m spt show --monitor 3 --pitch-mm 0.153 --layout touch
-python -m spt digitize --probe output/probe_s23.probe.json --calib output/nexigo_n930e_fhd_webcam.calib.json --scene output/scene_touch.json --monitor 1
+python -m spt digitize --probe output/probes/probe_s23.probe.json --calib output/calibrations/nexigo_n930e_fhd_webcam.calib.json --scene output/scenes/scene_touch.json --monitor 1
 ```
 
 Every frame with both the reference board and the probe visible gives the tip in the
@@ -91,7 +91,7 @@ matched to it and its error is reported. The error is split into in-plane (x, y)
 depth (z). Depth has a constant offset, because the tip touches the cover glass a
 little in front of the pixels.
 
-Output: `output/points_<time>.csv` (name, x, y, z, spread, frames, target, error) and
+Output: `output/measurements/points/points_<time>.csv` (name, x, y, z, spread, frames, target, error) and
 `..._frames.csv` with every frame's tip and both raw poses.
 
 ### First touch test (S23 + pencil, NexiGo, Kamvas, 2026-11-27)
@@ -159,7 +159,7 @@ helps at 4K. A 4K stream must reach the host and be detected at ~15 fps (~56 ms 
 4K frame), with stabilisation off and focus locked.
 
 ```
-python -m spt prism-template          # output/prisms/<design>_template.pdf + <design>.prism.json
+python -m spt prism-template          # output/print/templates/<design>_template.pdf + <design>.prism.json
 python scripts/probe_size_sim.py      # rerun the comparison (e.g. for a redesign)
 python scripts/probe_size_sim.py --table small --cameras "S23 4K video"
 ```
@@ -193,19 +193,19 @@ tip error per frame (80 mm tip) **2.0-2.2 mm -> 0.08-0.09 mm**, ~1 s to solve.
 ### Building a probe's map
 
 ```powershell
-.venv\Scripts\python -m spt map-probe --design hex30 --calib output\nexigo_n930e_fhd_webcam.calib.json
-.venv\Scripts\python -m spt map-probe --design hex30 --calib output\phone_5.calib.json --camera phone:main
+.venv\Scripts\python -m spt map-probe --design hex30 --calib output\calibrations\nexigo_n930e_fhd_webcam.calib.json
+.venv\Scripts\python -m spt map-probe --design hex30 --calib output\calibrations\phone_5.calib.json --camera phone:main
 ```
 
 Turn the probe slowly in front of the camera and hold it still now and then. A view
 is kept when the probe is still, shows at least two faces, and is turned at least 8°
 from every kept view. The panel lists faces still short of views (6 each) and pairs
 of neighbouring faces never seen together; aim for ~40 views. `q` builds the map:
-`output/prisms/<design>.map.json` plus the raw views (`*_views.json`).
+`output/probes/<design>.map.json` plus the raw views (`*_views.json`).
 
 ## Loose markers (reference maps)
 
-`python -m spt marker-sheets` writes `output/markers/loose_markers.pdf`: one size per
+`python -m spt marker-sheets` writes `output/print/markers/loose_markers.pdf`: one size per
 letter page, packed as tightly as the white border allows (one cell, marker / 7):
 
 | size | per page | IDs |

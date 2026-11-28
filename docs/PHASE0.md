@@ -36,12 +36,12 @@ python -m spt show --monitor 3 --pitch-mm 0.153 --layout measure   # both boards
 ```
 
 `--diagonal-in` works instead of `--pitch-mm`. Each `show` writes a scene file
-(`output/scene_<layout>.json`) recording exactly what was shown. Esc closes the
+(`output/scenes/scene_<layout>.json`) recording exactly what was shown. Esc closes the
 window. Then use `--scene` instead of square sizes and `--known-mm`:
 
 ```
-python -m spt calibrate captures/calib --scene output/scene_calib.json --debug-dir output/calib_debug
-python -m spt measure captures/measure --scene output/scene_measure.json --csv output/measure.csv --debug-dir output/measure_debug
+python -m spt calibrate captures/calib --scene output/scenes/scene_calib.json --debug-dir output/debug/calib_debug
+python -m spt measure captures/measure --scene output/scenes/scene_measure.json --csv output/measurements/measure/measure.csv --debug-dir output/debug/measure_debug
 ```
 
 With a scene, `measure` also reports the error of every photo against the exact truth
@@ -70,7 +70,7 @@ file says. In the `measure` layout the reference board is 171 x 122 mm, the targ
 python -m spt make-boards              # or --paper a4
 ```
 
-This writes `output/boards/boards_letter.pdf` (page 1 reference, page 2 target) as an
+This writes `output/print/boards/boards_letter.pdf` (page 1 reference, page 2 target) as an
 exact vector drawing, plus PNG previews.
 
 - Print at **100 % / Actual size**, never "fit to page". A laser printer is best.
@@ -115,12 +115,12 @@ Take **20-30 photos of the reference board** (target board out of view):
 Put them in `captures/calib/` and run:
 
 ```
-python -m spt calibrate captures/calib --square-mm 29.97 --debug-dir output/calib_debug
+python -m spt calibrate captures/calib --square-mm 29.97 --debug-dir output/debug/calib_debug
 ```
 
 Good result: **RMS under 0.5 px** and **coverage of 70 % or more**. The `--debug-dir`
 overlays show which corners were found. `--max-view-error 1.0` drops bad photos and
-recalibrates. The calibration is written to `output/camera.calib.json`.
+recalibrates. The calibration is written to `output/calibrations/camera.calib.json`.
 
 ## 5. Measure
 
@@ -132,7 +132,7 @@ recalibrates. The calibration is written to `output/camera.calib.json`.
   resolution as the calibration. Put them in `captures/measure/`.
 
 ```
-python -m spt measure captures/measure --ref-square-mm 29.97 --tgt-square-mm 24.98 --known-mm 301.5 --csv output/measure.csv --debug-dir output/measure_debug
+python -m spt measure captures/measure --ref-square-mm 29.97 --tgt-square-mm 24.98 --known-mm 301.5 --csv output/measurements/measure/measure.csv --debug-dir output/debug/measure_debug
 ```
 
 The report lists every photo's point and these summary lines:

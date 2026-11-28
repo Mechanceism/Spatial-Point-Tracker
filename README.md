@@ -64,3 +64,21 @@ position is then known exactly; see [docs/PHASE0.md](docs/PHASE0.md#2a-or-show-t
 | `tests/` | Synthetic-image end-to-end tests |
 
 Photos go in `captures/` and results in `output/`. Both are ignored by git.
+
+## Where files go
+
+Everything the tools write is under `output/` (not in git):
+
+```
+output/
+  calibrations/   <camera>.calib.json   (old/ = superseded)
+  scenes/         scene_<layout>.json   boards shown on a screen = exact truth
+  probes/         probe definitions: *.probe.json, *.prism.json, *.map.json
+  print/          print_all_letter.pdf, boards/, markers/, templates/
+  measurements/   measure/, measure_live/, measure_multi/, points/, pivot/
+  phone/          reports/, snapshots/, streams/, logs/
+  debug/          detection overlays
+```
+
+Raw camera frames from calibrations and tests go to `captures/`. The folders are
+defined in `spt/paths.py`.

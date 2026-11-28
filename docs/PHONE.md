@@ -199,7 +199,7 @@ and draw on a small preview picture from the phone.
 
 ### Main lens calibration (2026-11-27)
 
-`python -m spt calibrate-live --camera phone:main --scene output/scene_calib.json`,
+`python -m spt calibrate-live --camera phone:main --scene output/scenes/scene_calib.json`,
 phone hand-held around the Kamvas board, focus locked at 2.77 D (0.36 m):
 
 | | S23 main (4K) | NexiGo (1080p) |
@@ -213,7 +213,7 @@ phone hand-held around the Kamvas board, focus locked at 2.77 D (0.36 m):
 
 ### Live measurement test, main lens (2026-11-27)
 
-`python -m spt measure-live --calib output/phone_5.calib.json --scene output/scene_measure.json`:
+`python -m spt measure-live --calib output/calibrations/phone_5.calib.json --scene output/scenes/scene_measure.json`:
 phone **hand-held** 0.41-0.52 m from the Kamvas (focus restored to 0.36 m), 12
 captures of 15 frames, truth 175.49 mm.
 
@@ -242,7 +242,7 @@ Zoom 0.6 leaves the main (scale 1.000) and tele (fx ~3712) unchanged. The Live r
 always runs at the minimum zoom, and phone calibrations store `zoom` and
 `session_lenses`: a calibration holds only for the same session. (The first ultrawide
 calibration, fx 2638 at zoom 1.0, was of the cropped stream:
-`output/phone_2_zoom1_cropped.calib.json`, not used.)
+`output/calibrations/old/phone_2_zoom1_cropped.calib.json`, not used.)
 
 ### All three lenses calibrated (2026-11-27)
 

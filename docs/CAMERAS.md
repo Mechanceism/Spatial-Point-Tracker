@@ -28,7 +28,7 @@ detection.
 
 ```
 python -m spt show --monitor 3 --pitch-mm 0.153 --layout calib      # board on the Kamvas
-python -m spt calibrate-live --camera nexigo --scene output/scene_calib.json --monitor 1
+python -m spt calibrate-live --camera nexigo --scene output/scenes/scene_calib.json --monitor 1
 ```
 
 Hold the board (Kamvas, phone screen or print) in front of the camera and move it
@@ -47,7 +47,7 @@ worse than the rest (blur, glare) is dropped with a low beep.
 
 It's **done** (long beep, hint says DONE) at 15 views, 80 % coverage, tilts of at
 least 20 degrees left/right and forward/back, and an error of 0.6 px or less. Press `q`
-to save. Esc quits without saving. The calibration goes to `output/<camera>.calib.json`
+to save. Esc quits without saving. The calibration goes to `output/calibrations/<camera>.calib.json`
 and records the camera and mode. The accepted frames are saved to
 `captures/calib_live/...` so `python -m spt calibrate` can redo it offline.
 
@@ -62,7 +62,7 @@ degree view, so the S23 resolves about 1.8x finer detail per degree than the Nex
 
 ```
 python -m spt show --monitor 3 --pitch-mm 0.153 --layout measure    # both boards on the Kamvas
-python -m spt measure-live --calib output/nexigo_n930e_fhd_webcam.calib.json --monitor 1
+python -m spt measure-live --calib output/calibrations/nexigo_n930e_fhd_webcam.calib.json --monitor 1
 ```
 
 Hold the screen with both boards in front of the camera. Every frame measures the
@@ -75,7 +75,7 @@ turn the screen (20 mm or 5 degrees) for the next one. `q` finishes and prints:
 - **one capture:** error after averaging frames from one viewpoint;
 - **mean of captures:** error after also averaging over viewpoints.
 
-Every frame is written to `output/measure_live_<camera>_<time>.csv`, and one image
+Every frame is written to `output/measurements/measure_live/measure_live_<camera>_<time>.csv`, and one image
 per capture goes to `captures/measure_live/`.
 
 ### Result: NexiGo + Kamvas (2026-11-27)

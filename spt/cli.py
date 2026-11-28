@@ -21,6 +21,7 @@ from .detect import BoardDetector, draw_detection, image_size, list_images, load
 from .display import LAYOUTS, Scene, list_monitors, make_scene, pitch_from_diagonal, show
 from .guided import GuideConfig, GuidedCalibrator
 from .phone import PhoneCamera, is_phone
+from . import paths
 from .live_measure import LiveMeasureSession
 from .measure import PointMeasurer, Summary, summarize
 from .pdf import write_pdf
@@ -66,7 +67,7 @@ def cmd_show(args: argparse.Namespace) -> int:
     else:
         raise SystemExit("give the screen size: --diagonal-in (e.g. 30) or --pitch-mm")
     scene = make_scene(mon.width, mon.height, pitch, args.layout, monitor=mon.name)
-    out = Path(args.out or f"output/scene_{args.layout}.json")
+    out = Path(args.out or paths.scene(args.layout))
     out.parent.mkdir(parents=True, exist_ok=True)
     scene.save(out)
 
@@ -301,7 +302,7 @@ def cmd_calibrate_live(args: argparse.Namespace) -> int:
     safe = "".join(ch if ch.isalnum() else "_" for ch in (live.name if phone else cam_name)).strip("_").lower()
     stamp = time.strftime("%Y%m%d_%H%M%S")
     frames_dir = Path(args.frames_dir or f"captures/calib_live/{safe}_{stamp}")
-    out = Path(args.out or f"output/{safe}.calib.json")
+    out = Path(args.out or paths.calibration(safe))
     first = live.read(timeout=8.0)
     size = (first.image.shape[1], first.image.shape[0])
     cfg = GuideConfig(min_views=args.min_views, target_coverage=args.coverage, max_rms=args.max_rms,
@@ -414,7 +415,7 @@ def cmd_measure_live(args: argparse.Namespace) -> int:
     safe = "".join(ch if ch.isalnum() else "_" for ch in cam_name).strip("_").lower()
     stamp = time.strftime("%Y%m%d_%H%M%S")
     frames_dir = Path(f"captures/measure_live/{safe}_{stamp}")
-    csv_path = Path(args.csv or f"output/measure_live_{safe}_{stamp}.csv")
+    csv_path = Path(args.csv or paths.measurement("measure_live", f"measure_live_{safe}_{stamp}.csv"))
 
     if phone:
         live = PhoneCamera(query, focus=calib.camera.get("focus_d")).start()
@@ -562,13 +563,15 @@ def cmd_probe_image(args: argparse.Namespace) -> int:
 
 
 def cmd_prism_template(args: argparse.Namespace) -> int:
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    pdf_dir = Path(args.out) if args.out else paths.TEMPLATES_PRINT
+    spec_dir = Path(args.out) if args.out else paths.PROBES
+    pdf_dir.mkdir(parents=True, exist_ok=True)
+    spec_dir.mkdir(parents=True, exist_ok=True)
     names = list(DESIGNS) if args.design == "all" else [args.design]
     for name in names:
         d = DESIGNS[name]
         pages = template_pages(d)
-        pdf, spec = out / f"{d.name}_template.pdf", out / f"{d.name}.prism.json"
+        pdf, spec = pdf_dir / f"{d.name}_template.pdf", spec_dir / f"{d.name}.prism.json"
         write_pdf(pdf, pages)
         d.save(spec)
         print(f"{d.name}: {d.sides} faces {d.face_w:g} x {d.length:g} mm ({d.across_flats:.2f} mm across flats), "
@@ -703,7 +706,7 @@ def cmd_pivot(args: argparse.Namespace) -> int:
     result, keep = solve_pivot_robust(poses)
     # Raw observations: every sampled probe pose, and whether the fit kept it.
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    raw = Path(f"output/pivot_{probe.name}_{stamp}.csv")
+    raw = paths.measurement("pivot", f"pivot_{probe.name}_{stamp}.csv")
     raw.parent.mkdir(parents=True, exist_ok=True)
     kept = set(keep)
     with open(raw, "w", newline="") as f:
@@ -765,7 +768,8 @@ def cmd_digitize(args: argparse.Namespace) -> int:
         mode = cam_info.best_mode()
     K, dist = calib.camera_matrix, calib.dist_coeffs
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    points_csv = Path(args.out or f"output/points_{stamp}.csv")
+    points_csv = Path(args.out or paths.measurement("points", f"points_{stamp}.csv"))
+    points_csv.parent.mkdir(parents=True, exist_ok=True)
     frames_csv = points_csv.with_name(points_csv.stem + "_frames.csv")
 
     if phone:
@@ -1081,7 +1085,7 @@ def cmd_phone(args: argparse.Namespace) -> int:
 
     record = None
     if args.record:
-        out = Path("output/phone")
+        out = paths.PHONE / "streams"
         out.mkdir(parents=True, exist_ok=True)
         record = out / f"stream_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
     link = PhoneLink(port=args.port, record=record)
@@ -1211,7 +1215,7 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
             print(f"WARNING: lens {lens} was calibrated at zoom {c.camera['zoom']:.2f}, the phone streams at {zoom:.2f}")
     truth = scene.truth()
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    csv_path = Path(args.csv or f"output/measure_multi_{stamp}.csv")
+    csv_path = Path(args.csv or paths.measurement("measure_multi", f"measure_multi_{stamp}.csv"))
     width, height = calibs[lenses[0]].image_size
     cams_name = " + ".join(labels[k] for k in lenses)
     window = f"Multi-camera measurement - {cams_name}"
@@ -1379,7 +1383,7 @@ def cmd_map_probe(args: argparse.Namespace) -> int:
     design = DESIGNS[args.design]
     calib = CameraCalibration.load(args.calib)
     start = MarkerMap.load(args.start) if args.start else MarkerMap.from_prism(design)
-    out = Path(args.out or f"output/prisms/{design.name}.map.json")
+    out = Path(args.out or paths.PROBES / f"{design.name}.map.json")
     query = args.camera or calib.camera.get("name")
     phone = is_phone(query)
     if phone:
@@ -1495,7 +1499,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     mb = sub.add_parser("make-boards", help="write the printable reference + target boards (vector PDF)")
     mb.add_argument("--paper", choices=sorted(PAPER_MM), default="letter")
-    mb.add_argument("--out", default="output/boards")
+    mb.add_argument("--out", default=str(paths.BOARDS_PRINT))
     mb.set_defaults(func=cmd_make_boards)
 
     ca = sub.add_parser("cameras", help="list cameras and their modes")
@@ -1521,7 +1525,7 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--fps", type=float)
     cl.add_argument("--fourcc", default="MJPG")
     cl.add_argument("--scene", help="scene file from 'show --layout calib' (board square size)")
-    cl.add_argument("--out", help="calibration file (default output/<camera>.calib.json)")
+    cl.add_argument("--out", help="calibration file (default output/calibrations/<camera>.calib.json)")
     cl.add_argument("--frames-dir", help="where accepted frames are saved (default captures/calib_live/...)")
     cl.add_argument("--min-views", type=int, default=15)
     cl.add_argument("--coverage", type=float, default=0.8, help="frame coverage goal (0-1)")
@@ -1534,21 +1538,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     ml = sub.add_parser("measure-live", help="live measurement test against the exact screen truth")
     ml.add_argument("--calib", required=True, help="calibration file (its camera is used unless --camera)")
-    ml.add_argument("--scene", default="output/scene_measure.json", help="scene from 'show --layout measure'")
+    ml.add_argument("--scene", default=str(paths.scene("measure")), help="scene from 'show --layout measure'")
     ml.add_argument("--camera", help="index or part of the name (default: from the calibration) ('phone:main' / 'phone:ultrawide' / 'phone:tele' = the SPT Camera app over USB)")
     ml.add_argument("--fps", type=float)
     ml.add_argument("--fourcc", default="MJPG")
     ml.add_argument("--frames", type=int, default=15, help="frames averaged per capture")
     ml.add_argument("--max-rms", type=float, default=1.0, help="reject frames whose board fit is worse (px)")
-    ml.add_argument("--csv", help="per-frame results (default output/measure_live_<camera>_<time>.csv)")
+    ml.add_argument("--csv", help="per-frame results (default output/measurements/measure_live/...)")
     ml.add_argument("--monitor", type=int, help="monitor to show the camera view on")
     ml.add_argument("--max-side", type=int, default=1800)
     ml.add_argument("--no-mirror", action="store_true")
     ml.set_defaults(func=cmd_measure_live)
 
     mm = sub.add_parser("measure-multi", help="live measurement with several cameras at once (phone lenses, webcams), fused")
-    mm.add_argument("--calib", nargs="+", default=["output/phone_5.calib.json", "output/phone_6.calib.json",
-                                                   "output/phone_2.calib.json"],
+    mm.add_argument("--calib", nargs="+", default=[str(paths.calibration(f"phone_{i}")) for i in (5, 6, 2)],
                     help="one calibration per camera: phone lenses and/or webcams (the first drives the window)")
     mm.add_argument("--weighting", choices=["cov", "fx2", "equal"], default="cov",
                     help="cov: each camera's 3D uncertainty from its board fits (default); fx2: focal length squared")
@@ -1556,10 +1559,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="detections per second per phone lens (lower = cooler phone; default 10)")
     mm.add_argument("--floor-mm", type=float, default=0.25,
                     help="uncertainty every camera gets on top of its fit (systematic errors), mm (default 0.25)")
-    mm.add_argument("--scene", default="output/scene_measure.json", help="scene from 'show --layout measure'")
+    mm.add_argument("--scene", default=str(paths.scene("measure")), help="scene from 'show --layout measure'")
     mm.add_argument("--frames", type=int, default=8, help="frame groups averaged per capture (default 8)")
     mm.add_argument("--max-rms", type=float, default=1.0, help="reject a lens's frame whose board fit is worse (px)")
-    mm.add_argument("--csv", help="per-frame results (default output/measure_multi_<time>.csv)")
+    mm.add_argument("--csv", help="per-frame results (default output/measurements/measure_multi/...)")
     mm.add_argument("--monitor", type=int)
     mm.add_argument("--max-side", type=int, default=1600)
     mm.set_defaults(func=cmd_measure_multi)
@@ -1573,7 +1576,7 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--tip-back-mm", type=float, default=15.0, help="tip distance behind the screen surface")
     pi.add_argument("--tip", choices=["sharp", "ball"], default="sharp")
     pi.add_argument("--ball-radius-mm", type=float, default=0.0)
-    pi.add_argument("--out", default="output/probe_s23", help="output path without extension")
+    pi.add_argument("--out", default=str(paths.PROBES / "probe_s23"), help="output path without extension")
     pi.set_defaults(func=cmd_probe_image)
 
     mp = sub.add_parser("map-probe", help="measure a printed prism probe's real marker layout (bundle adjustment)")
@@ -1581,7 +1584,7 @@ def build_parser() -> argparse.ArgumentParser:
     mp.add_argument("--calib", required=True, help="calibration of the camera used")
     mp.add_argument("--camera", help="default: from the calibration ('phone:main' etc. for the phone)")
     mp.add_argument("--start", help="start from this map instead of the nominal design")
-    mp.add_argument("--out", help="default output/prisms/<design>.map.json")
+    mp.add_argument("--out", help="default output/probes/<design>.map.json")
     mp.add_argument("--views", type=int, default=40, help="views to aim for (default 40)")
     mp.add_argument("--min-turn", type=float, default=8.0, help="degrees a new view must differ from every kept one")
     mp.add_argument("--still-mm", type=float, default=1.5, help="probe motion per frame that counts as still")
@@ -1594,12 +1597,12 @@ def build_parser() -> argparse.ArgumentParser:
     ms = sub.add_parser("marker-sheets", help="printable sheets of loose markers (several sizes, letter paper)")
     ms.add_argument("--sizes", type=float, nargs="+", default=[165, 90, 75, 50, 35, 25], help="marker sizes in mm")
     ms.add_argument("--first-id", type=int, default=100)
-    ms.add_argument("--out", default="output/markers")
+    ms.add_argument("--out", default=str(paths.MARKERS_PRINT))
     ms.set_defaults(func=cmd_marker_sheets)
 
     pt = sub.add_parser("prism-template", help="folding template (PDF) + nominal geometry for a prism probe")
     pt.add_argument("--design", choices=["all", *DESIGNS], default="all")
-    pt.add_argument("--out", default="output/prisms")
+    pt.add_argument("--out", help="folder for both files (default: PDF to output/print/templates, geometry to output/probes)")
     pt.set_defaults(func=cmd_prism_template)
 
     ps = sub.add_parser("probe-scale", help="set the probe board's measured square size")
@@ -1633,7 +1636,7 @@ def build_parser() -> argparse.ArgumentParser:
     dg.add_argument("--ref-square-mm", type=float, help="reference square size (printed board)")
     dg.add_argument("--frames", type=int, default=15, help="frames averaged per point")
     dg.add_argument("--max-rms", type=float, default=1.0)
-    dg.add_argument("--out", help="points CSV (default output/points_<time>.csv)")
+    dg.add_argument("--out", help="points CSV (default output/measurements/points/points_<time>.csv)")
     dg.add_argument("--monitor", type=int)
     dg.add_argument("--max-side", type=int, default=1800)
     dg.add_argument("--no-mirror", action="store_true")
@@ -1643,7 +1646,7 @@ def build_parser() -> argparse.ArgumentParser:
     ph.add_argument("--port", type=int, default=8765, help="PC port forwarded to the app (default 8765)")
     ph.add_argument("--seconds", type=float, help="stop after this long (default: until Ctrl+C)")
     ph.add_argument("--lock-focus", type=float, metavar="S", help="lock focus S seconds after connecting")
-    ph.add_argument("--record", action="store_true", help="save every message to output/phone/stream_<time>.jsonl")
+    ph.add_argument("--record", action="store_true", help="save every message to output/phone/streams/stream_<time>.jsonl")
     ph.add_argument("--lenses", help="run only these lenses, e.g. main or main,tele (default: all)")
     ph.add_argument("--max-fps", type=float, help="detections per lens per second on the phone (app default 10)")
     ph.add_argument("--min-marker-px", type=float, help="smallest marker side to find, px (app default 40)")
@@ -1661,7 +1664,7 @@ def build_parser() -> argparse.ArgumentParser:
     size = sh.add_mutually_exclusive_group()
     size.add_argument("--diagonal-in", type=float, help="visible screen diagonal in inches")
     size.add_argument("--pitch-mm", type=float, help="pixel pitch in mm")
-    sh.add_argument("--out", help="scene file (default output/scene_<layout>.json)")
+    sh.add_argument("--out", help="scene file (default output/scenes/scene_<layout>.json)")
     sh.add_argument("--seconds", type=float, help="close automatically after this long")
     sh.set_defaults(func=cmd_show)
 
@@ -1670,7 +1673,7 @@ def build_parser() -> argparse.ArgumentParser:
     cal.add_argument("--board", choices=sorted(BOARDS), default="reference")
     cal.add_argument("--square-mm", type=float, help="measured printed square size (default: nominal)")
     cal.add_argument("--scene", help="scene file from 'show' (sets the square size)")
-    cal.add_argument("--out", default="output/camera.calib.json")
+    cal.add_argument("--out", default=str(paths.calibration("camera")))
     cal.add_argument("--rational", action="store_true", help="8-coefficient distortion model (wide lenses)")
     cal.add_argument("--max-view-error", type=float, help="drop views above this error (px) and recalibrate once")
     cal.add_argument("--debug-dir", help="save detection overlays here")
@@ -1678,7 +1681,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     me = sub.add_parser("measure", help="locate the target corner in the reference frame across photos")
     me.add_argument("photos", help="folder of photos showing both boards")
-    me.add_argument("--calib", default="output/camera.calib.json")
+    me.add_argument("--calib", default=str(paths.calibration("camera")))
     me.add_argument("--ref-square-mm", type=float, help="measured reference square size")
     me.add_argument("--tgt-square-mm", type=float, help="measured target square size")
     me.add_argument("--ref-corner", type=int, default=0)

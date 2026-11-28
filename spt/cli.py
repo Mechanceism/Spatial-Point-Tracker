@@ -1185,7 +1185,7 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
     multi = None
     if phone_keys:
         focus = {k: calibs[k].camera["focus_d"] for k in phone_keys if calibs[k].camera.get("focus_d")}
-        multi = PhoneMulti(phone_keys, focus=focus, preview=phone_keys[0]).start()
+        multi = PhoneMulti(phone_keys, focus=focus, preview=phone_keys[0], max_fps=args.phone_fps).start()
     lives = {}
     for k in cam_keys:
         c = calibs[k]
@@ -1433,6 +1433,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="one calibration per camera: phone lenses and/or webcams (the first drives the window)")
     mm.add_argument("--weighting", choices=["cov", "fx2", "equal"], default="cov",
                     help="cov: each camera's 3D uncertainty from its board fits (default); fx2: focal length squared")
+    mm.add_argument("--phone-fps", type=float, default=10.0,
+                    help="detections per second per phone lens (lower = cooler phone; default 10)")
     mm.add_argument("--floor-mm", type=float, default=0.25,
                     help="uncertainty every camera gets on top of its fit (systematic errors), mm (default 0.25)")
     mm.add_argument("--scene", default="output/scene_measure.json", help="scene from 'show --layout measure'")

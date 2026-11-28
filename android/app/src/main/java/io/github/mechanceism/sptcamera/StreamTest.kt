@@ -40,15 +40,16 @@ class StreamTest(
     }
 
     /** One session with one or more streams. */
-    data class Combo(val streams: List<Stream>, val raw: Boolean = false) {
-        constructor(lenses: List<String?>, width: Int, height: Int, raw: Boolean = false) :
-            this(lenses.map { Stream(it, width, height) }, raw)
+    data class Combo(val streams: List<Stream>, val raw: Boolean = false, val zoom: Float? = null) {
+        constructor(lenses: List<String?>, width: Int, height: Int, raw: Boolean = false, zoom: Float? = null) :
+            this(lenses.map { Stream(it, width, height) }, raw, zoom)
 
         val lenses: List<String?> get() = streams.map { it.lens }
         private val uniform: Boolean get() = streams.all { it.width == streams[0].width && it.height == streams[0].height }
         val label: String
             get() = (if (uniform) "${streams[0].height}p [" + streams.joinToString("+") { it.name } + "]"
-            else "[" + streams.joinToString("+") { "${it.name}@${it.height}p" } + "]") + if (raw) " raw" else ""
+            else "[" + streams.joinToString("+") { "${it.name}@${it.height}p" } + "]") + (if (raw) " raw" else "") +
+                (zoom?.let { " zoom $it" } ?: "")
     }
 
     private class FrameStats {
@@ -254,7 +255,8 @@ class StreamTest(
                 if (img == null) return@forEachIndexed
                 val lens = combo.lenses[i] ?: "logical"
                 val req = combo.streams[i]
-                val name = "snap_${lens}_${req.width}x${req.height}${if (combo.raw) "_raw" else ""}.jpg"
+                val tag = combo.lenses.joinToString("") { it ?: "L" } + (combo.zoom?.let { "_z$it" } ?: "") + if (combo.raw) "_raw" else ""
+                val name = "snap_${lens}_${req.width}x${req.height}_s$tag.jpg"
                 java.io.FileOutputStream(java.io.File(dir, name)).use { out ->
                     android.graphics.YuvImage(nv21(img), ImageFormat.NV21, img.width, img.height, null)
                         .compressToJpeg(android.graphics.Rect(0, 0, img.width, img.height), 92, out)
@@ -506,6 +508,8 @@ class StreamTest(
                 set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)
             }
             fixed30(chars)?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+            // The logical camera's zoom: physical streams can be cropped to match it.
+            combo.zoom?.let { set(CaptureRequest.CONTROL_ZOOM_RATIO, it) }
         }
 
     private fun hasMode(c: CameraCharacteristics, mode: Int) =

@@ -245,13 +245,22 @@ class MainActivity : Activity() {
         save("focus_latest.json", result.toString(2))
     }
 
-    /** One frame per lens from the useful 3-lens session (main + ultrawide 4K, telephoto 1440p). */
+    /** Frames per lens from a few sessions, to compare fields of view (see snapshot_latest.json). */
     private fun snapshot() {
         val cm = getSystemService(CameraManager::class.java)
         val lenses = lenses(cm) ?: return
         val logical = lenses.logical
         val runs = org.json.JSONArray()
-        val combos = listOf(lenses.useful)
+        // Does the ultrawide's field of view depend on the session? (Alone it calibrated
+        // at the main lens's ~72°, inside the 3-lens session it showed ~84°.)
+        val uw = lenses.roles.entries.firstOrNull { it.value == "ultrawide" }?.key
+        val main = lenses.roles.entries.firstOrNull { it.value == "main" }?.key
+        // Zoom 0.6 gives the ultrawide its full view; does it change main or tele?
+        val combos = listOfNotNull(
+            main?.let { StreamTest.Combo(listOf(it), 3840, 2160) },
+            main?.let { StreamTest.Combo(listOf(it), 3840, 2160, zoom = 0.6f) },
+            StreamTest.Combo(lenses.physical, 3840, 2160, zoom = 0.6f),
+        )
         for (combo in combos) {
             if (stopRequested) break
             log("=== Snapshot ${combo.label} ===")
@@ -284,5 +293,5 @@ class MainActivity : Activity() {
 }
 
 object BuildConfigInfo {
-    const val VERSION = "0.7"
+    const val VERSION = "0.9"
 }

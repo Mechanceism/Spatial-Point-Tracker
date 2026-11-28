@@ -11,8 +11,8 @@ android {
         applicationId = "io.github.mechanceism.sptcamera"
         minSdk = 31
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.7"
+        versionCode = 9
+        versionName = "0.9"
         // The S23 (and any recent phone) is 64-bit ARM; leaving out the other ABIs
         // keeps OpenCV's native library from bloating the APK.
         ndk {

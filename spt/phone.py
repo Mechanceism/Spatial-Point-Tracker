@@ -365,6 +365,11 @@ class PhoneCamera:
         return self
 
     @property
+    def zoom(self) -> float | None:
+        """The phone's logical zoom while streaming (the app uses its minimum)."""
+        return (self.link.hello or {}).get("zoom")
+
+    @property
     def focus_d(self) -> float | None:
         """Where the lens is focused (diopters), if it has autofocus."""
         return self._latest.focus_d if self._latest is not None else None

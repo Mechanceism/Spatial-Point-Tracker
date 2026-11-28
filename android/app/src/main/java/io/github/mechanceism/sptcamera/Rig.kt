@@ -80,6 +80,13 @@ class Rig(
     private val chars = cm.getCameraCharacteristics(logicalId)
     private val physKeys = chars.availablePhysicalCameraRequestKeys ?: emptyList()
     val perLensFocus = physKeys.contains(CaptureRequest.LENS_FOCUS_DISTANCE) && physKeys.contains(CaptureRequest.CONTROL_AF_MODE)
+
+    /**
+     * The logical camera's zoom, always at its minimum: physical streams are cropped to
+     * the logical zoom, so at the default 1.0x the S23's ultrawide came out cropped to
+     * the main lens's 72° (upscaled); at 0.6x it delivers its full ~102°.
+     */
+    val zoom: Float? = chars[CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE]?.lower
     val autofocusLenses: List<String> = streams.mapNotNull { it.lens }.filter { id ->
         (cm.getCameraCharacteristics(id)[CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES] ?: IntArray(0))
             .contains(CameraMetadata.CONTROL_AF_MODE_AUTO)
@@ -174,6 +181,7 @@ class Rig(
         if ((chars[CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION] ?: IntArray(0)).contains(1)) {
             b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)
         }
+        zoom?.let { b.set(CaptureRequest.CONTROL_ZOOM_RATIO, it) }
         (chars[CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES] ?: emptyArray()).let { ranges ->
             (ranges.firstOrNull { it.lower == 30 && it.upper == 30 } ?: ranges.filter { it.upper == 30 }.maxByOrNull { it.lower })
                 ?.let { b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }

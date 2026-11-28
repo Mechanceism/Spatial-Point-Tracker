@@ -217,13 +217,14 @@ class LiveActivity : Activity(), Rig.Listener {
             o.put("streams", streamsJson(r))
             o.put("autofocus", JSONArray(r.autofocusLenses)).put("per_lens_focus", r.perLensFocus)
             o.put("detector", r.detectorConfig.json())
+            o.put("zoom", r.zoom?.toDouble() ?: JSONObject.NULL)
         }
         return o
     }
 
     private fun streamsJson(r: Rig) = JSONArray(r.streams.map {
         JSONObject().put("lens", it.lens ?: "logical").put("role", roles[it.lens] ?: JSONObject.NULL)
-            .put("requested", JSONArray(listOf(it.width, it.height)))
+            .put("requested", JSONArray(listOf(it.width, it.height))).put("zoom", r.zoom?.toDouble() ?: JSONObject.NULL)
     })
 
     override fun onPcPreview(stream: StreamTest.Stream, timestampNs: Long, width: Int, height: Int, jpeg: ByteArray) {

@@ -375,6 +375,10 @@ def cmd_calibrate_live(args: argparse.Namespace) -> int:
     calib.camera = {"name": live.name if phone else cam_name, "width": size[0], "height": size[1], "fourcc": live.fourcc}
     if phone:
         calib.camera["role"] = live.role
+        # The phone crops physical streams by session (zoom, which lenses run): a
+        # calibration holds only for the same session.
+        calib.camera["zoom"] = live.zoom
+        calib.camera["session_lenses"] = [live.lens]
         if live.focus_d is not None:  # the calibration holds at this focus only
             calib.camera["focus_d"] = round(float(live.focus_d), 4)
     out.parent.mkdir(parents=True, exist_ok=True)

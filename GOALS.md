@@ -93,9 +93,13 @@ Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.
 - [x] PC link over USB (`adb forward` to a local socket, no network permission):
       `python -m spt phone`, `spt/phone.py`
 - [x] Detection load: ArUco3 + 10 fps cap (15-45 ms per 4K frame); still warms slowly
-- [ ] Heat: only the lenses needed, low rate until the probe is still
-- [ ] Phone as a camera source for calibrate-live / measure-live / digitize
-      (per-lens calibration through the same pipeline)
+- [x] Heat: PC picks the lenses (one lens levels off), 2 fps search rate for lenses
+      that see nothing
+- [x] Phone as a camera source for calibrate-live / measure-live / pivot / digitize
+      (`--camera phone:main`); focus locked on the board and stored in the calibration
+- [x] Main lens calibrated through the phone: 0.244 px RMS at 4K, 100 % coverage
+- [ ] Live measurement test with the phone (compare with the NexiGo's 0.27 mm)
+- [ ] Calibrate ultrawide and tele; digitize with the phone
 - [x] Native Android app: detects markers on the phone and sends corners (raw
       observations) to the PC; the PC stays the hub
 - [ ] Per-lens calibration through the same video pipeline; stabilisation off,

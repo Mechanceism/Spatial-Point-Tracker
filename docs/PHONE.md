@@ -180,3 +180,33 @@ fast with two lenses.
 
 Still warming slowly at 3 x 10 fps: run only the lenses needed, lower `--max-fps`
 when idle, or detect at a lower rate until the probe is held still.
+
+## The phone as a camera for the live tools (0.7)
+
+`--camera phone:main` (or `phone:ultrawide`, `phone:tele`, or a lens ID) works with
+`calibrate-live`, `measure-live`, `pivot` and `digitize`. Only that lens streams on
+the phone; the tools measure with the corners the phone detected at full resolution
+and draw on a small preview picture from the phone.
+
+- `calibrate-live` waits until the board has been in view for 2 s, then locks focus
+  and stores the distance (`focus_d`) in the calibration; the other tools restore it.
+  The raw observations are the detected corners (`views.json`), not images.
+- Steadiness is scaled to the stream (`GuideConfig.for_stream`): at 4K and 15
+  detections/s a hand-held phone counts as still at ~4 px per frame, the same
+  steadiness as 1 px at 1080p / 30 fps.
+- Heat with one lens (main, 4K, 10 detections/s): thermal headroom 0.58 -> 0.63 in
+  the first 20 s, then level; battery 30.9 -> 32.2 °C over 60 s.
+
+### Main lens calibration (2026-11-27)
+
+`python -m spt calibrate-live --camera phone:main --scene output/scene_calib.json`,
+phone hand-held around the Kamvas board, focus locked at 2.77 D (0.36 m):
+
+| | S23 main (4K) | NexiGo (1080p) |
+|---|---|---|
+| RMS | **0.244 px** | 0.18 px |
+| fx | 2579.7 ± 3.8 px (nominal 2541) | 1471.2 ± 1.2 px |
+| coverage | 100 % | 85 % |
+| views | 21 | |
+
+0.24 px at 4K is ~0.12 px at webcam scale, with 1.75x the pixels per mm.

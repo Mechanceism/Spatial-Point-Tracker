@@ -66,12 +66,17 @@ Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.
 - [ ] **User:** 3D-print the hex bodies (51.96 / 103.92 mm across flats), print and
       glue the templates, fit a rigid tip on the axis
 - [ ] **User:** printed (non-emissive) reference boards (print shop / library laser printer)
-- [ ] **Marker maps:** measure the real layout of rigid marker sets from images
-      (bundle adjustment), starting from nominal geometry
-  - [ ] Prism probe calibration (face-to-face layout) + pivot for the printed tip
+- [x] **Marker maps:** measure the real layout of rigid marker sets from images
+      (bundle adjustment, `spt/markermap.py`), starting from nominal geometry;
+      simulation: glue errors 0.6-0.8 mm -> 0.01 mm, tip 2 mm -> 0.08 mm per frame
+  - [x] `map-probe`: collect views of a prism probe (still, two+ faces, new angle,
+        face / neighbour coverage), refine, save the map
+  - [ ] Run `map-probe` on the printed hex30, then pivot for the printed tip
+  - [x] Loose marker sheets (`marker-sheets`): 165-25 mm, DICT_5X5_250 IDs 100-177
   - [ ] Multi-board reference maps for a car corner; grow by adding boards seen
         together with mapped ones; re-solve without losing stored points
-- [ ] Poses from any visible markers of a marker map (multi-face probe, several boards)
+- [x] Poses from any visible markers of a marker map (`markermap.locate`)
+- [ ] pivot / digitize using a probe marker map instead of the phone-screen board
 - [ ] Re-test the touch offset with the printed probe and printed boards (parked until then)
 - [ ] Automatic per-camera "max range" and expected error from calibration + probe design
 

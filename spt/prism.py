@@ -112,11 +112,12 @@ LINE = 0.2  # mm, cut / fold line width
 TAB = 8.0  # mm, glue tab width
 
 
-def _marker_rects(marker_id: int, x: float, y: float, size: float) -> list[tuple[float, float, float, float, float]]:
+def _marker_rects(marker_id: int, x: float, y: float, size: float,
+                  dictionary_id: int = DICTIONARY) -> list[tuple[float, float, float, float, float]]:
     """A marker whose top-left corner is at (x, y) on the page, as (x, y, w, h, gray)
     rectangles: one solid black square, then the white cells on top. The black border
     is then a single shape, so no hairline seams can break it up in print."""
-    dictionary = cv2.aruco.getPredefinedDictionary(DICTIONARY)
+    dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
     cells = dictionary.markerSize + 2
     img = cv2.aruco.generateImageMarker(dictionary, marker_id, cells, borderBits=1)
     cell = size / cells

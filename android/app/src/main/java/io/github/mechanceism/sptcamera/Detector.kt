@@ -78,12 +78,14 @@ class Detections(
 }
 
 /**
- * Detects ArUco markers (DICT_5X5_100, sub-pixel corners) and ChArUco board corners in a
+ * Detects ArUco markers (DICT_5X5_250, sub-pixel corners) and ChArUco board corners in a
  * grayscale image. One marker pass serves every board. Not thread-safe: use one
  * Detector per thread.
  */
 class Detector(boards: List<BoardSpec>, private val config: DetectorConfig = DetectorConfig()) {
-    private val dictionary = Objdetect.getPredefinedDictionary(Objdetect.DICT_5X5_100)
+    // DICT_5X5_250: its first 100 markers are DICT_5X5_100 (boards 0-55, prisms 60-83),
+    // and loose reference markers use IDs 100-249.
+    private val dictionary = Objdetect.getPredefinedDictionary(Objdetect.DICT_5X5_250)
     private val params = DetectorParameters().apply {
         set_cornerRefinementMethod(Objdetect.CORNER_REFINE_SUBPIX)
         set_useAruco3Detection(config.aruco3)

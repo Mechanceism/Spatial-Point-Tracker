@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -57,6 +57,7 @@ class Observed:
 
     boards: dict[str, Detection]
     size: tuple[int, int]  # width, height of the image they were found in
+    markers: dict[int, np.ndarray] = field(default_factory=dict)  # marker id -> (4, 2) corners
 
 
 class BoardDetector:

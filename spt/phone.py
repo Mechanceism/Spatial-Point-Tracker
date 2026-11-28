@@ -438,7 +438,7 @@ class PhoneCamera:
                     raise TimeoutError(f"no frame from the phone ({self.link.error or 'timeout'})")
                 self._cond.wait(min(left, 0.2))
             frame, number = self._latest, self._number
-        return PhoneSourceFrame(self._picture(frame), number, frame.received, Observed(frame.boards, frame.image_size))
+        return PhoneSourceFrame(self._picture(frame), number, frame.received, Observed(frame.boards, frame.image_size, frame.markers))
 
     def _picture(self, frame: PhoneFrame) -> np.ndarray:
         prev = self.link.previews.get(frame.lens)
@@ -558,7 +558,7 @@ class PhoneMulti:
                     self.partial += 1
                 self._number += 1
                 self._ready.append(PhoneGroup(t, self._number, now,
-                                              {k: Observed(f.boards, f.image_size) for k, f in fr.items()}))
+                                              {k: Observed(f.boards, f.image_size, f.markers) for k, f in fr.items()}))
             if done:
                 self._cond.notify_all()
 

@@ -171,3 +171,53 @@ two pages. Faces are numbered counter-clockwise seen from the top. The `.prism.j
 holds the nominal 3D marker corners (origin at the prism centre, z up the axis away
 from the tip, x through face 0); marker-map calibration measures the real layout
 starting from it.
+
+## Marker maps (measuring the glued probe)
+
+Printing and gluing are never exact: a marker 0.5 mm / 1.5° off moves the computed
+tip by ~2 mm on an 80 mm tip. A **marker map** measures the real layout from views
+of the probe (`spt/markermap.py`):
+
+- elements: each marker (its 4 corners as a square of known size; `m<id>`) or a
+  ChArUco board (`b:<name>`), each with a pose in the map frame;
+- `locate()`: the map's pose from every visible element at once (any faces);
+- `refine()`: bundle adjustment of all frame poses and element poses, starting from
+  the nominal design; the result is moved back onto the design frame by a best fit,
+  so the nominal tip offset keeps its meaning. Scale comes from the printed marker
+  size, so check the template's 100 mm bar.
+
+Simulation (hex30, every marker glued up to 1.5-2° / 0.5-0.7 mm off, 40 views, 0.2 px
+noise): layout error 0.61-0.83 mm -> **0.011 mm**, reprojection 4-5 px -> 0.25 px,
+tip error per frame (80 mm tip) **2.0-2.2 mm -> 0.08-0.09 mm**, ~1 s to solve.
+
+### Building a probe's map
+
+```powershell
+.venv\Scripts\python -m spt map-probe --design hex30 --calib output\nexigo_n930e_fhd_webcam.calib.json
+.venv\Scripts\python -m spt map-probe --design hex30 --calib output\phone_5.calib.json --camera phone:main
+```
+
+Turn the probe slowly in front of the camera and hold it still now and then. A view
+is kept when the probe is still, shows at least two faces, and is turned at least 8°
+from every kept view. The panel lists faces still short of views (6 each) and pairs
+of neighbouring faces never seen together; aim for ~40 views. `q` builds the map:
+`output/prisms/<design>.map.json` plus the raw views (`*_views.json`).
+
+## Loose markers (reference maps)
+
+`python -m spt marker-sheets` writes `output/markers/loose_markers.pdf`: one size per
+letter page, packed as tightly as the white border allows (one cell, marker / 7):
+
+| size | per page | IDs |
+|---|---|---|
+| 165 mm (largest on letter) | 1 | 100 |
+| 90 mm | 2 | 101-102 |
+| 75 mm | 4 | 103-106 |
+| 50 mm | 9 | 107-115 |
+| 35 mm | 20 | 116-135 |
+| 25 mm | 42 | 136-177 |
+
+Loose markers use **DICT_5X5_250** (IDs 100-249). Its first 100 markers are exactly
+DICT_5X5_100, so the boards (0-55) and prisms (60-83) are unchanged; the PC's marker
+detector and the phone app (0.11) read DICT_5X5_250. Cut on the grey lines (they keep
+the border), stick flat, each ID once per setup.

@@ -1370,6 +1370,125 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_map_probe(args: argparse.Namespace) -> int:
+    """Measure the real marker layout of a printed prism probe (bundle adjustment)."""
+    from .markermap import MarkerDetector, MarkerMap, refine
+    from .prism import DESIGNS
+    from .probemap import ProbeMapSession
+
+    design = DESIGNS[args.design]
+    calib = CameraCalibration.load(args.calib)
+    start = MarkerMap.load(args.start) if args.start else MarkerMap.from_prism(design)
+    out = Path(args.out or f"output/prisms/{design.name}.map.json")
+    query = args.camera or calib.camera.get("name")
+    phone = is_phone(query)
+    if phone:
+        live = PhoneCamera(query, focus=calib.camera.get("focus_d"), boards=[]).start()
+        cam_name = live.name
+    else:
+        info = find_camera(query, list_cameras(with_modes=True, include_virtual=True))
+        mode = info.best_mode()
+        live = LiveCamera(info.index, *calib.image_size, mode.fps if mode else None, calib.camera.get("fourcc", "MJPG")).start()
+        cam_name = info.name
+    detector = None if phone else MarkerDetector()
+    width, height = calib.image_size
+    window = f"Probe marker map - {design.name} - {cam_name}"
+    _open_window(window, args.monitor, width, height, args.max_side)
+    print(f"{cam_name}: turn the {design.name} probe slowly in front of the camera, holding still now and then. "
+          f"Every face, and every pair of neighbouring faces, needs several views. q builds the map, Esc cancels.")
+    session = ProbeMapSession(design, start, calib, min_turn=args.min_turn, still_mm=args.still_mm,
+                              still_deg=args.still_deg, still_frames=args.still_frames)
+    last = 0
+    message, message_until = "", 0.0
+    try:
+        while True:
+            frame = live.read(after=last, timeout=5.0)
+            last = frame.number
+            if phone:
+                markers = dict(frame.observed.markers)
+            else:
+                markers = detector.detect(cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY))
+            markers = {i: c for i, c in markers.items() if i in set(design.ids)}
+            step = session.update(markers)
+            state, pose = step.state, step.pose
+            if state == "kept":
+                message = f"view {len(session.frames)} kept (faces {', '.join(map(str, step.faces))})"
+                message_until = time.perf_counter() + 1.5
+                _beep(1400, 60)
+            out_img = frame.image.copy()
+            for i, c in markers.items():
+                color = (0, 220, 0) if session.seen.get(i, 0) >= session.views_per_face else (0, 200, 255)
+                cv2.polylines(out_img, [np.round(c).astype(np.int32)], True, color, max(2, width // 600), cv2.LINE_AA)
+                cv2.putText(out_img, str(i), tuple(np.round(c[0]).astype(int)), cv2.FONT_HERSHEY_SIMPLEX,
+                            max(0.6, width / 2400), color, max(1, width // 1200), cv2.LINE_AA)
+            border = {"kept": (0, 220, 0), "holding": (0, 220, 255), "same": (255, 160, 0)}.get(state)
+            h, w = out_img.shape[:2]
+            if border:
+                cv2.rectangle(out_img, (0, 0), (w - 1, h - 1), border, max(6, w // 100))
+            scale = args.max_side / max(w, h)
+            if scale < 1:
+                out_img = cv2.resize(out_img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            weak, missing = session.coverage()
+            line1 = f"views {len(session.frames)} (aim {args.views})   markers now {len(markers)}" + (
+                f"   fit {pose.rms_px:.2f} px" if pose is not None else "")
+            line2 = ("faces needing views: " + (", ".join(map(str, weak)) or "none") +
+                     "   neighbours never seen together: " + (", ".join(f"{a}-{b}" for a, b in missing) or "none"))
+            hint = message if time.perf_counter() < message_until else {
+                "none": "show at least two faces (turn the probe so an edge points at the camera)",
+                "moving": "hold still briefly",
+                "holding": "hold still...",
+                "same": "already have this view - turn the probe",
+            }.get(state, "")
+            if session.enough(args.views):
+                hint = "enough views - press q to build the map (more views still help)"
+            out_img = _with_panel(out_img, [line1, line2, f"> {hint}", "q build the map   Esc cancel"], scale=0.8)
+            cv2.imshow(window, out_img)
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
+                print("cancelled, nothing saved")
+                return 1
+            if key == ord("q"):
+                break
+    finally:
+        live.stop()
+        cv2.destroyAllWindows()
+
+    frames = session.frames
+    if len(frames) < 6:
+        print(f"only {len(frames)} views: need more to build a map")
+        return 1
+    raw = out.with_name(out.stem + "_views.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text(json.dumps({"design": design.name, "camera": cam_name, "frames": [
+        {k: {"idx": v[0].tolist(), "px": np.round(v[1], 3).tolist()} for k, v in f.items()} for f in frames]}))
+    mmap, rep = refine(start, frames, calib)
+    mmap.extras.update({"camera": cam_name, "views": rep.frames_used, "rms_px": round(rep.rms_after, 3)})
+    mmap.save(out)
+    weak, missing = session.coverage()
+    print(f"\nMarker map for {design.name}: {rep.frames_used} views ({rep.frames_dropped} unusable), "
+          f"{rep.iterations} iterations")
+    print(f"  reprojection RMS  {rep.rms_before:.2f} px with the nominal layout -> {rep.rms_after:.2f} px measured")
+    print("  marker   views   moved from nominal   fit")
+    for k in sorted(mmap.elements, key=lambda k: int(k[1:])):
+        print(f"  {k:>6}   {rep.observations.get(k, 0):5d}   {rep.moved_mm[k]:8.2f} mm        "
+              f"{rep.element_rms.get(k, float('nan')):.2f} px")
+    if weak or missing:
+        print(f"  WARNING: thin coverage (faces {weak}, neighbour pairs {missing}): more views would firm it up")
+    print(f"\nwrote {out}\nsaved the views to {raw} (raw observations)")
+    return 0
+
+
+def cmd_marker_sheets(args: argparse.Namespace) -> int:
+    from .markersheet import layout, write_sheets
+    pdf, meta, sizes = write_sheets(args.out, tuple(args.sizes), args.first_id)
+    for size in args.sizes:
+        c, r = layout(size)
+        ids = sorted(i for i, s in sizes.items() if s == size)
+        print(f"  {size:5g} mm: {c * r:2d} per page, IDs {ids[0]}-{ids[-1]}")
+    print(f"wrote {pdf} ({len(sizes)} markers) and {meta}. Print at 100 % and check the 100 mm bar.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m spt", description="Spatial Point Tracker phase 0 tools")
     sub = p.add_subparsers(dest="command", required=True)
@@ -1456,6 +1575,27 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--ball-radius-mm", type=float, default=0.0)
     pi.add_argument("--out", default="output/probe_s23", help="output path without extension")
     pi.set_defaults(func=cmd_probe_image)
+
+    mp = sub.add_parser("map-probe", help="measure a printed prism probe's real marker layout (bundle adjustment)")
+    mp.add_argument("--design", choices=["hex30", "hex60"], default="hex30")
+    mp.add_argument("--calib", required=True, help="calibration of the camera used")
+    mp.add_argument("--camera", help="default: from the calibration ('phone:main' etc. for the phone)")
+    mp.add_argument("--start", help="start from this map instead of the nominal design")
+    mp.add_argument("--out", help="default output/prisms/<design>.map.json")
+    mp.add_argument("--views", type=int, default=40, help="views to aim for (default 40)")
+    mp.add_argument("--min-turn", type=float, default=8.0, help="degrees a new view must differ from every kept one")
+    mp.add_argument("--still-mm", type=float, default=1.5, help="probe motion per frame that counts as still")
+    mp.add_argument("--still-deg", type=float, default=1.0)
+    mp.add_argument("--still-frames", type=int, default=3)
+    mp.add_argument("--monitor", type=int)
+    mp.add_argument("--max-side", type=int, default=1600)
+    mp.set_defaults(func=cmd_map_probe)
+
+    ms = sub.add_parser("marker-sheets", help="printable sheets of loose markers (several sizes, letter paper)")
+    ms.add_argument("--sizes", type=float, nargs="+", default=[165, 90, 75, 50, 35, 25], help="marker sizes in mm")
+    ms.add_argument("--first-id", type=int, default=100)
+    ms.add_argument("--out", default="output/markers")
+    ms.set_defaults(func=cmd_marker_sheets)
 
     pt = sub.add_parser("prism-template", help="folding template (PDF) + nominal geometry for a prism probe")
     pt.add_argument("--design", choices=["all", *DESIGNS], default="all")

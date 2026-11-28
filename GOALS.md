@@ -100,7 +100,10 @@ Cameras: [docs/CAMERAS.md](docs/CAMERAS.md). Probes: [docs/PROBE.md](docs/PROBE.
 - [x] Main lens calibrated through the phone: 0.244 px RMS at 4K, 100 % coverage
 - [x] Live measurement test with the phone, hand-held: 0.39 mm per frame, 0.31 mm per
       capture (NexiGo fixed: 0.48 / 0.27); x/y 0.03-0.04 mm, z dominates
-- [ ] Calibrate ultrawide and tele; digitize with the phone
+- [x] Zoom 0.6 for the full ultrawide view (zoom 1.0 crops it to 72°); calibrations
+      record zoom and session lenses
+- [x] Ultrawide (0.245 px, rational model) and tele (0.273 px) calibrated
+- [ ] Digitize with the phone (needs the printed probe; the S23 can't be camera and probe)
 - [x] Native Android app: detects markers on the phone and sends corners (raw
       observations) to the PC; the PC stays the hub
 - [ ] Per-lens calibration through the same video pipeline; stabilisation off,

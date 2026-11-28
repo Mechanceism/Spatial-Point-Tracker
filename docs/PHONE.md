@@ -227,3 +227,35 @@ captures of 15 frames, truth 175.49 mm.
 In-plane error is a third of the webcam's (x/y 0.03-0.04 mm per capture); depth (z)
 is again almost all of it. Hand-held at 0.4-0.5 m the phone already matches the fixed
 webcam per capture, well inside the 1-2 mm target.
+
+### Zoom crops the physical streams (snapshots, SIFT scale vs. the main lens)
+
+The logical camera's zoom (`CONTROL_ZOOM_RATIO`, 0.6-10) crops physical streams:
+
+| Ultrawide stream | fx (4K) | HFOV |
+|---|---|---|
+| alone, default zoom 1.0 | ~2624 | 72° (= main lens: ultrawide sensor cropped ~58 % and upscaled; a sixth of the main lens's fine detail) |
+| in the 3-lens session, zoom 1.0 | ~2187 | 83° |
+| alone or 3-lens, **zoom 0.6** | ~1570 | **102°** (its full view) |
+
+Zoom 0.6 leaves the main (scale 1.000) and tele (fx ~3712) unchanged. The Live rig
+always runs at the minimum zoom, and phone calibrations store `zoom` and
+`session_lenses`: a calibration holds only for the same session. (The first ultrawide
+calibration, fx 2638 at zoom 1.0, was of the cropped stream:
+`output/phone_2_zoom1_cropped.calib.json`, not used.)
+
+### All three lenses calibrated (2026-11-27)
+
+Hand-held around the Kamvas board (`calibrate-live --camera phone:<lens>`):
+
+| Lens | Stream | RMS | fx | Focus locked | Model | Views / coverage |
+|---|---|---|---|---|---|---|
+| main (5) | 3840x2160 | 0.244 px | 2579.7 ± 3.8 | 2.77 D (0.36 m) | 5-term | 21 / 100 % |
+| ultrawide (2) | 3840x2160, zoom 0.6 | 0.245 px | 1579.6 ± 2.7 | fixed focus | 8-term rational (`--rational`) | 23 / 100 % |
+| tele (6) | 1920x1440 | 0.273 px | 3806.3 ± 6.2 | 2.49 D (0.40 m) | 5-term | 15 / 100 % |
+
+- The tele focused at 0.40 m (closer than guessed); its fx is 2.5 % above the
+  far-scene snapshot (lens breathing at close focus).
+- The tele's large radial terms (k2 38, k3 -290) are real for this lens: refitting the
+  saved corners with k3 fixed doubles the error (0.61 px), with k2 and k3 fixed 1.22 px.
+- Pixels per mm at 1 m: ultrawide 1.58, main 2.58, tele 3.81 (tele at 1920 wide).

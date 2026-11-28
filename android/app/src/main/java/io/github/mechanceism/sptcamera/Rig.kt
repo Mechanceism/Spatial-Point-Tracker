@@ -87,6 +87,9 @@ class Rig(
     @Volatile var boards: List<BoardSpec> = boards
         private set
     @Volatile private var boardGen = 0
+    @Volatile var detectorConfig = DetectorConfig()
+        private set
+    private val lastStart = LongArray(streams.size)
     val stats = streams.map { Stats() }
 
     /** Lens -> focus distance it reports right now (diopters). */
@@ -113,7 +116,12 @@ class Rig(
             reader.setOnImageAvailableListener({ r ->
                 val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
                 stats[i].cameraFrames++
-                if (!running.get() || !busy[i].compareAndSet(false, true)) { img.close(); return@setOnImageAvailableListener }
+                val now = System.nanoTime()
+                val minGap = (1e9 / detectorConfig.maxFps.coerceAtLeast(0.1)).toLong()
+                if (!running.get() || now - lastStart[i] < minGap || !busy[i].compareAndSet(false, true)) {
+                    img.close(); return@setOnImageAvailableListener
+                }
+                lastStart[i] = now
                 workers[i].execute {
                     try { process(i, img) } catch (t: Throwable) { log("detect error on ${streams[i].name}: ${t.message}") } finally {
                         img.close()
@@ -172,6 +180,12 @@ class Rig(
         }, handler)
     }
 
+    /** Change how detection runs (rate cap, ArUco3, smallest marker). */
+    fun setDetectorConfig(config: DetectorConfig) {
+        detectorConfig = config
+        boardGen++
+    }
+
     /** Replace the board definitions (e.g. sent by the PC); each detection thread picks them up. */
     fun setBoards(list: List<BoardSpec>) {
         boards = list
@@ -187,7 +201,7 @@ class Rig(
 
     private fun process(i: Int, img: android.media.Image) {
         if (detectors[i] == null || detectorGen[i] != boardGen) {
-            detectors[i] = Detector(boards)
+            detectors[i] = Detector(boards, detectorConfig)
             detectorGen[i] = boardGen
         }
         val det = detectors[i]!!

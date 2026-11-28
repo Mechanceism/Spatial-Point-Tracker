@@ -106,12 +106,14 @@ def test_link_receives_frames_and_sends_commands(tmp_path):
     link.set_focus("6", 1.5)
     link.set_focus("6", None)
     link.send_boards([REFERENCE])
-    assert wait_for(lambda: len(phone.commands) == 4)
-    assert [c["cmd"] for c in phone.commands] == ["lock_focus", "focus", "focus", "boards"]
+    link.set_detector(max_fps=5, aruco3=False)
+    assert wait_for(lambda: len(phone.commands) == 5)
+    assert [c["cmd"] for c in phone.commands] == ["lock_focus", "focus", "focus", "boards", "detector"]
+    assert phone.commands[4] == {"cmd": "detector", "max_fps": 5, "aruco3": False}  # unset values not sent
     assert phone.commands[1] == {"cmd": "focus", "lens": "6", "diopters": 1.5}
     assert phone.commands[2]["diopters"] is None
     assert phone.commands[3]["boards"][0]["name"] == "reference"
-    assert wait_for(lambda: len(link.replies) == 4)
+    assert wait_for(lambda: len(link.replies) == 5)
     link.close()
     lines = (tmp_path / "rec.jsonl").read_text().splitlines()
     assert json.loads(lines[0])["type"] == "hello" and len(lines) >= 4

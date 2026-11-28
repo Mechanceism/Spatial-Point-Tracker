@@ -212,6 +212,7 @@ class LiveActivity : Activity(), Rig.Listener {
                     .put("requested", JSONArray(listOf(it.width, it.height)))
             }))
             o.put("autofocus", JSONArray(r.autofocusLenses)).put("per_lens_focus", r.perLensFocus)
+            o.put("detector", r.detectorConfig.json())
         }
         return o
     }
@@ -234,6 +235,11 @@ class LiveActivity : Activity(), Rig.Listener {
                 boards = (0 until arr.length()).map { BoardSpec.fromJson(arr.getJSONObject(it)) }
                 r?.setBoards(boards)
                 log("boards from the PC: ${boards.joinToString { it.name }}")
+            }
+            "detector" -> {
+                r ?: return reply.put("ok", false).put("message", "camera not running")
+                r.setDetectorConfig(r.detectorConfig.with(c))
+                reply.put("detector", r.detectorConfig.json())
             }
             "preview" -> { r ?: return reply.put("ok", false); r.previewIndex = r.streams.indexOfFirst { it.lens == c.getString("lens") }.coerceAtLeast(0) }
             else -> return reply.put("ok", false).put("message", "unknown command")

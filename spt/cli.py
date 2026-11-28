@@ -1034,6 +1034,9 @@ def cmd_phone(args: argparse.Namespace) -> int:
         print(f"  autofocus lenses {hello.get('autofocus')}, per-lens focus: {hello.get('per_lens_focus')}")
         link.send_boards(list(BOARDS.values()))
         print(f"  boards sent: {', '.join(BOARDS)}" + (f"; recording to {record}" if record else ""))
+        if args.max_fps is not None or args.min_marker_px is not None or args.aruco3 is not None:
+            link.set_detector(args.max_fps, args.aruco3, args.min_marker_px)
+        print(f"  detector (before changes): {hello.get('detector')}")
         if args.lock_focus:
             print(f"  locking focus in {args.lock_focus:g} s (autofocus settles first)")
         print("Ctrl+C to stop.\n")
@@ -1062,8 +1065,9 @@ def cmd_phone(args: argparse.Namespace) -> int:
                 parts.append(f"{lens}:{f.width}x{f.height} {counts.get(lens, 0) / dt:4.1f}fps "
                              f"{f.detect_ms:3.0f}ms mk {len(f.markers):2d} {boards}{focus}")
             st = link.status or {}
-            temp = st.get("thermal", {}).get("battery_c", "?")
-            print(f"[{now - t0:5.0f}s] " + " | ".join(parts) + f" | {temp} C {st.get('camera', '')}")
+            th = st.get("thermal", {})
+            print(f"[{now - t0:5.0f}s] " + " | ".join(parts)
+                  + f" | {th.get('battery_c', '?')} C head {th.get('headroom', '?')} {st.get('camera', '')}")
     except KeyboardInterrupt:
         pass
     finally:
@@ -1186,6 +1190,10 @@ def build_parser() -> argparse.ArgumentParser:
     ph.add_argument("--seconds", type=float, help="stop after this long (default: until Ctrl+C)")
     ph.add_argument("--lock-focus", type=float, metavar="S", help="lock focus S seconds after connecting")
     ph.add_argument("--record", action="store_true", help="save every message to output/phone/stream_<time>.jsonl")
+    ph.add_argument("--max-fps", type=float, help="detections per lens per second on the phone (app default 10)")
+    ph.add_argument("--min-marker-px", type=float, help="smallest marker side to find, px (app default 40)")
+    ph.add_argument("--aruco3", action=argparse.BooleanOptionalAction, default=None,
+                    help="ArUco3 fast detection on the phone (app default on)")
     ph.set_defaults(func=cmd_phone)
 
     mo = sub.add_parser("monitors", help="list monitors (for show)")

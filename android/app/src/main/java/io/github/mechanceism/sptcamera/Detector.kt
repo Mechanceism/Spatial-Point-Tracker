@@ -37,6 +37,19 @@ data class BoardSpec(val name: String, val squaresX: Int, val squaresY: Int, val
     }
 }
 
+/**
+ * How hard to work. `aruco3` finds markers on a reduced image and refines them at full
+ * resolution; `minMarkerPx` (smallest marker side to look for, in pixels) sets how much
+ * it may reduce. `maxFps` caps detections per lens per second (heat and battery).
+ */
+data class DetectorConfig(val maxFps: Double = 10.0, val aruco3: Boolean = true, val minMarkerPx: Double = 40.0) {
+    fun json(): JSONObject = JSONObject().put("max_fps", maxFps).put("aruco3", aruco3).put("min_marker_px", minMarkerPx)
+
+    fun with(o: JSONObject) = DetectorConfig(
+        o.optDouble("max_fps", maxFps), o.optBoolean("aruco3", aruco3), o.optDouble("min_marker_px", minMarkerPx),
+    )
+}
+
 /** What one frame shows: every marker (refined corners) and the ChArUco corners per board. */
 class Detections(
     val markerIds: IntArray,
@@ -62,11 +75,14 @@ class Detections(
  * grayscale image. One marker pass serves every board. Not thread-safe: use one
  * Detector per thread.
  */
-class Detector(boards: List<BoardSpec>) {
+class Detector(boards: List<BoardSpec>, private val config: DetectorConfig = DetectorConfig()) {
     private val dictionary = Objdetect.getPredefinedDictionary(Objdetect.DICT_5X5_100)
-    private val markerDetector = ArucoDetector(dictionary, DetectorParameters().apply {
+    private val params = DetectorParameters().apply {
         set_cornerRefinementMethod(Objdetect.CORNER_REFINE_SUBPIX)
-    })
+        set_useAruco3Detection(config.aruco3)
+    }
+    private val markerDetector = ArucoDetector(dictionary, params)
+    private var ratioFor = 0 // image size the ArUco3 ratio was set for
     private val boardDetectors = boards.map { spec ->
         val ids = Mat(spec.markerCount, 1, CvType.CV_32S).apply { put(0, 0, spec.ids.toList().toIntArray()) }
         val board = CharucoBoard(Size(spec.squaresX.toDouble(), spec.squaresY.toDouble()), spec.squareMm, spec.markerMm, dictionary, ids)
@@ -75,6 +91,13 @@ class Detector(boards: List<BoardSpec>) {
 
     fun detect(gray: Mat): Detections {
         val t0 = System.nanoTime()
+        val side = maxOf(gray.cols(), gray.rows())
+        if (config.aruco3 && side != ratioFor) {
+            // ArUco3 works on an image reduced so the smallest wanted marker is ~32 px.
+            params.set_minMarkerLengthRatioOriginalImg((config.minMarkerPx / side).toFloat())
+            markerDetector.setDetectorParameters(params)
+            ratioFor = side
+        }
         val corners = ArrayList<Mat>()
         val idsMat = Mat()
         markerDetector.detectMarkers(gray, corners, idsMat)

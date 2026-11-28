@@ -9,7 +9,7 @@ permission. Messages are JSON, one per line:
   (one lens, one frame: markers + ChArUco corners per board) and ``status`` (thermal,
   camera state) about once a second, and ``reply`` to commands.
 - PC -> phone: ``{"cmd": "lock_focus" | "unlock_focus" | "focus" | "boards" |
-  "preview" | "ping", ...}``.
+  "detector" | "preview" | "ping", ...}``.
 
 The phone app must have the Live screen open.
 """
@@ -221,6 +221,16 @@ class PhoneLink:
 
     def send_boards(self, specs: list[BoardSpec]) -> None:
         self.send({"cmd": "boards", "boards": [board_json(s) for s in specs]})
+
+    def set_detector(self, max_fps: float | None = None, aruco3: bool | None = None,
+                     min_marker_px: float | None = None) -> None:
+        """Detection settings on the phone: detections per lens per second, ArUco3 fast
+        mode, and the smallest marker side (px) it must still find."""
+        cmd = {"cmd": "detector"}
+        for key, value in (("max_fps", max_fps), ("aruco3", aruco3), ("min_marker_px", min_marker_px)):
+            if value is not None:
+                cmd[key] = value
+        self.send(cmd)
 
     def set_preview(self, lens: str) -> None:
         self.send({"cmd": "preview", "lens": lens})

@@ -38,6 +38,7 @@ class GuideConfig:
     min_views: int = 15
     target_coverage: float = 0.8
     max_rms: float = 0.6
+    rational: bool = False  # 8-term distortion model, for wide lenses
 
     def for_stream(self, width: int, fps: float) -> "GuideConfig":
         """The same steadiness for another image width and frame rate.
@@ -170,7 +171,7 @@ class GuidedCalibrator:
 
     def _run_calibration(self) -> CameraCalibration:
         named = [(f"view{i:02d}", v.detection) for i, v in enumerate(self.views)]
-        return calibrate(named, self.spec, self.image_size, min_corners=self.cfg.min_corners)
+        return calibrate(named, self.spec, self.image_size, rational=self.cfg.rational, min_corners=self.cfg.min_corners)
 
     # ----- progress ------------------------------------------------------
     @property

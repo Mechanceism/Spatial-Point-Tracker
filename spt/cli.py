@@ -303,7 +303,8 @@ def cmd_calibrate_live(args: argparse.Namespace) -> int:
     out = Path(args.out or f"output/{safe}.calib.json")
     first = live.read(timeout=8.0)
     size = (first.image.shape[1], first.image.shape[0])
-    cfg = GuideConfig(min_views=args.min_views, target_coverage=args.coverage, max_rms=args.max_rms)
+    cfg = GuideConfig(min_views=args.min_views, target_coverage=args.coverage, max_rms=args.max_rms,
+                      rational=args.rational)
     if phone:  # 4K at ~15 detections/s: same steadiness as a webcam at 1080p / 30 fps
         cfg = cfg.for_stream(size[0], PHONE_CALIB_FPS)
     guide = GuidedCalibrator(spec, size, cfg)
@@ -1190,6 +1191,7 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--monitor", type=int, help="monitor to show the camera view on")
     cl.add_argument("--max-side", type=int, default=1800, help="display size limit (px)")
     cl.add_argument("--no-mirror", action="store_true", help="don't mirror the view (camera not facing you)")
+    cl.add_argument("--rational", action="store_true", help="8-term distortion model (wide / ultrawide lenses)")
     cl.set_defaults(func=cmd_calibrate_live)
 
     ml = sub.add_parser("measure-live", help="live measurement test against the exact screen truth")

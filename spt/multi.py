@@ -6,8 +6,14 @@ in a common frame. The fused point is a weighted mean. :class:`FusedMeasurer` st
 in for :class:`spt.measure.PointMeasurer`, so the live capture logic is unchanged;
 every fused result keeps each camera's own point for comparison.
 
-Weights: single-view error grows with the pixel noise divided by the focal length,
-so by default each camera gets fx**2 (inverse variance for equal pixel noise).
+Weights (``weighting``):
+
+- ``"cov"`` (default): each camera's 3x3 covariance of the point, propagated from its
+  two board fits (corner count, viewing geometry, residuals). A camera is weak along
+  its own line of sight, so cameras looking from different directions complement
+  each other: the fusion takes each one's strong directions.
+- ``"fx2"``: one number per camera, fx**2 (inverse variance for equal pixel noise).
+- ``"equal"``.
 """
 
 from __future__ import annotations
@@ -28,9 +34,14 @@ class FusedResult(ViewResult):
 
 class FusedMeasurer:
     def __init__(self, measurers: dict[str, PointMeasurer], weights: dict[str, float] | None = None,
-                 anchor: list[str] | None = None, min_cameras: int = 1):
+                 anchor: list[str] | None = None, min_cameras: int = 1, weighting: str = "cov",
+                 floor_mm: float = 0.05):
         self.measurers = measurers
+        if weighting == "equal":
+            weights = {k: 1.0 for k in measurers}
         self.weights = weights or {k: float(m.calib.camera_matrix[0, 0]) ** 2 for k, m in measurers.items()}
+        self.weighting = weighting
+        self.floor_mm = floor_mm  # added to every covariance: no camera is ever "perfect"
         self.anchor = anchor or list(measurers)  # whose poses drive the stillness check, in order
         self.min_cameras = min_cameras
         self.last: dict[str, ViewResult] = {}
@@ -56,9 +67,7 @@ class FusedMeasurer:
         self.last_reasons = reasons
         if len(results) < self.min_cameras:
             return None, "; ".join(f"{k}: {v}" for k, v in reasons.items()) or "nothing seen"
-        w = np.array([self.weights[k] for k in results])
-        pts = np.array([r.point for r in results.values()])
-        point = (w[:, None] * pts).sum(axis=0) / w.sum()
+        point = fuse_points(results, self.weights, self.weighting, self.floor_mm)
         lead = next(results[k] for k in self.anchor + list(results) if k in results)
         any_m = self.measurers[next(iter(results))]
         return FusedResult(
@@ -68,6 +77,19 @@ class FusedMeasurer:
             rms_px={k: max(r.ref.rms_px, r.tgt.rms_px) for k, r in results.items()},
             reasons=reasons,
         ), ""
+
+
+def fuse_points(results: dict, weights: dict[str, float], weighting: str = "cov", floor_mm: float = 0.05) -> np.ndarray:
+    """Weighted mean of the cameras' points: by inverse 3x3 covariance when every
+    camera has one (``weighting="cov"``), else by the scalar weights."""
+    pts = {k: np.asarray(r.point, float) for k, r in results.items()}
+    covs = {k: getattr(r, "cov", None) for k, r in results.items()}
+    if weighting == "cov" and all(c is not None for c in covs.values()):
+        floor = floor_mm ** 2 * np.eye(3)
+        W = {k: np.linalg.inv(covs[k] + floor) for k in pts}
+        return np.linalg.solve(sum(W.values()), sum(W[k] @ pts[k] for k in pts))
+    w = np.array([weights[k] for k in pts])
+    return (w[:, None] * np.array(list(pts.values()))).sum(axis=0) / w.sum()
 
 
 def compare(captures, truth: np.ndarray, cameras: list[str], weights: dict[str, float]) -> dict:

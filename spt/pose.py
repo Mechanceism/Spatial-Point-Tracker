@@ -11,6 +11,7 @@ from .calibration import CameraCalibration
 from .detect import BoardDetector, Detection
 
 MIN_POSE_CORNERS = 6
+MIN_SIGMA_PX = 0.1  # floor for the corner noise used in pose covariances
 
 
 @dataclass
@@ -21,6 +22,13 @@ class Pose:
     t: np.ndarray
     rms_px: float = 0.0
     corners: int = 0
+    # First-order uncertainty of (rvec, tvec) from the fit: sigma^2 (J^T J)^-1, 6x6,
+    # rad and mm. Only set by estimate_pose (not kept through inverse / compose).
+    cov6: np.ndarray | None = None
+
+    @property
+    def rvec(self) -> np.ndarray:
+        return cv2.Rodrigues(self.R)[0].reshape(3)
 
     def inverse(self) -> "Pose":
         return Pose(self.R.T, -self.R.T @ self.t, self.rms_px, self.corners)
@@ -53,7 +61,20 @@ def estimate_pose(
     if not ok:
         return None
     rvec, tvec = cv2.solvePnPRefineLM(obj, img, K, dist, rvec, tvec)
-    projected, _ = cv2.projectPoints(obj, rvec, tvec, K, dist)
+    projected, jac = cv2.projectPoints(obj, rvec, tvec, K, dist)
     rms = float(np.sqrt(np.mean(np.sum((projected.reshape(-1, 2) - img) ** 2, axis=1))))
     R, _ = cv2.Rodrigues(rvec)
-    return Pose(R, tvec.reshape(3).astype(np.float64), rms, len(obj))
+    return Pose(R, tvec.reshape(3).astype(np.float64), rms, len(obj), _pose_covariance(jac[:, :6], rms, len(obj)))
+
+
+def _pose_covariance(J: np.ndarray, rms: float, n: int) -> np.ndarray | None:
+    """sigma^2 (J^T J)^-1 for the 6 pose parameters, sigma from the residuals.
+
+    `rms` is the RMS of the 2D residual lengths, i.e. of both coordinates together, so
+    the per-coordinate noise is rms / sqrt(2) (corrected for the 6 fitted parameters)."""
+    dof = max(2 * n - 6, 1)
+    sigma = max(rms / np.sqrt(2) * np.sqrt(2 * n / dof), MIN_SIGMA_PX)
+    try:
+        return sigma ** 2 * np.linalg.inv(J.T @ J)
+    except np.linalg.LinAlgError:
+        return None

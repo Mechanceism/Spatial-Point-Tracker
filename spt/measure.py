@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 from .boards import BoardSpec
@@ -26,6 +27,7 @@ class ViewResult:
     ref: Pose
     tgt: Pose
     camera_distance_mm: float  # camera to reference-board origin
+    cov: np.ndarray | None = None  # 3x3 uncertainty of `point` (mm^2) from both board fits
 
 
 @dataclass
@@ -89,9 +91,37 @@ class PointMeasurer:
                 ref=ref,
                 tgt=tgt,
                 camera_distance_mm=float(np.linalg.norm(ref.t)),
+                cov=point_covariance(ref, tgt, self.tgt_xyz),
             ),
             "",
         )
+
+
+def point_covariance(ref: Pose, tgt: Pose, xyz: np.ndarray, step: float = 1e-6) -> np.ndarray | None:
+    """3x3 covariance (mm^2) of a target-board point expressed in the reference frame,
+    propagated from both pose fits (independent). It is long along the camera's line
+    of sight: one camera measures depth worst, which is what fusing views fixes."""
+    if ref.cov6 is None or tgt.cov6 is None:
+        return None
+    xyz = np.asarray(xyz, dtype=np.float64)
+    params = np.concatenate([ref.rvec, ref.t, tgt.rvec, tgt.t])
+
+    def point(p):
+        Rr = cv2.Rodrigues(p[0:3])[0]
+        Rt = cv2.Rodrigues(p[6:9])[0]
+        return Rr.T @ (Rt @ xyz + p[9:12] - p[3:6])
+
+    base = point(params)
+    J = np.zeros((3, 12))
+    for i in range(12):
+        d = step if i % 6 < 3 else 1e-4  # rad for rotations, mm for translations
+        q = params.copy()
+        q[i] += d
+        J[:, i] = (point(q) - base) / d
+    C = np.zeros((12, 12))
+    C[:6, :6] = ref.cov6
+    C[6:, 6:] = tgt.cov6
+    return J @ C @ J.T
 
 
 def summarize(

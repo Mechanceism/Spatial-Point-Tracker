@@ -1153,29 +1153,56 @@ def cmd_phone(args: argparse.Namespace) -> int:
 
 
 def cmd_measure_multi(args: argparse.Namespace) -> int:
-    """Live measurement with several phone lenses at once, fused, against the exact truth."""
+    """Live measurement with several cameras at once (phone lenses and/or webcams), each
+    measuring the target in the reference frame, fused, against the exact truth."""
     from .multi import FusedMeasurer, compare
     from .phone import PhoneMulti
 
-    calibs = {}
+    calibs, labels = {}, {}
+    phone_keys, cam_keys = [], []
     for path in args.calib:
         c = CameraCalibration.load(path)
         name = str(c.camera.get("name", ""))
-        if not is_phone(name):
-            raise SystemExit(f"{path} is not a phone calibration")
-        calibs[name.split(":", 1)[1]] = c
-    lenses = list(calibs)
+        if is_phone(name):
+            key = name.split(":", 1)[1]
+            phone_keys.append(key)
+            labels[key] = f"phone {key} ({c.camera.get('role', '?')})"
+        else:
+            if not name:
+                raise SystemExit(f"{path} does not name its camera")
+            key = name.split()[0].lower()
+            cam_keys.append(key)
+            labels[key] = name
+        calibs[key] = c
+    lenses = list(calibs)  # every camera, in the order given (the first drives the window)
     scene = Scene.load(args.scene)
     ref_b, tgt_b = scene.board("reference"), scene.board("target")
     if ref_b is None or tgt_b is None:
         raise SystemExit("the scene must show both boards (show --layout measure)")
     measurers = {lens: PointMeasurer(c, ref_b.spec, tgt_b.spec, max_rms_px=args.max_rms) for lens, c in calibs.items()}
-    fused = FusedMeasurer(measurers, anchor=lenses)
+    fused = FusedMeasurer(measurers, anchor=lenses, weighting=args.weighting)
     session = LiveMeasureSession(fused, scene.truth(), frames_per_capture=args.frames)
-    focus = {lens: c.camera["focus_d"] for lens, c in calibs.items() if c.camera.get("focus_d")}
-    multi = PhoneMulti(lenses, focus=focus, preview=lenses[0]).start()
-    zoom = (multi.link.hello or {}).get("zoom")
-    for lens, c in calibs.items():
+    multi = None
+    if phone_keys:
+        focus = {k: calibs[k].camera["focus_d"] for k in phone_keys if calibs[k].camera.get("focus_d")}
+        multi = PhoneMulti(phone_keys, focus=focus, preview=phone_keys[0]).start()
+    lives = {}
+    for k in cam_keys:
+        c = calibs[k]
+        info = find_camera(c.camera["name"], list_cameras(with_modes=True, include_virtual=True))
+        mode = info.best_mode()
+        lives[k] = LiveCamera(info.index, *c.image_size, mode.fps if mode else None, c.camera.get("fourcc", "MJPG")).start()
+        first = lives[k].read(timeout=8.0)
+        if (first.image.shape[1], first.image.shape[0]) != tuple(c.image_size):
+            for lv in lives.values():
+                lv.stop()
+            if multi:
+                multi.stop()
+            raise SystemExit(f"{labels[k]} gives {first.image.shape[1]}x{first.image.shape[0]}, "
+                             f"its calibration is for {tuple(c.image_size)}")
+    zoom = (multi.link.hello or {}).get("zoom") if multi else None
+    for lens in phone_keys:
+        c = calibs[lens]
         size = multi.sizes.get(lens)
         if size is not None and tuple(size) != tuple(c.image_size):
             multi.stop()
@@ -1186,9 +1213,10 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
     stamp = time.strftime("%Y%m%d_%H%M%S")
     csv_path = Path(args.csv or f"output/measure_multi_{stamp}.csv")
     width, height = calibs[lenses[0]].image_size
-    window = f"Multi-lens measurement - {multi.name}"
+    cams_name = " + ".join(labels[k] for k in lenses)
+    window = f"Multi-camera measurement - {cams_name}"
     _open_window(window, args.monitor, width, height, args.max_side)
-    print(f"{multi.name}: weights (fx^2) " + ", ".join(f"{k} {v / 1e6:.1f}" for k, v in fused.weights.items())
+    print(f"{cams_name}: weighting '{args.weighting}'"
           + f". Truth {scene.known_mm():.2f} mm. Hold still to capture, move between captures; q finishes, Esc quits.")
     colors = {"captured": (0, 220, 0), "collecting": (0, 220, 255), "none": (0, 0, 200), "move": (255, 160, 0)}
     message, message_until, last = "", 0.0, 0
@@ -1199,13 +1227,25 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
     try:
         while True:
             try:
-                group = multi.read(after=last, timeout=2.0)
+                if multi is not None:
+                    group = multi.read(after=last, timeout=2.0)
+                    observed, image = dict(group.observed), group.image
+                    number = group.number
+                else:  # webcams only: the first one sets the pace
+                    fr = lives[cam_keys[0]].read(after=last, timeout=2.0)
+                    observed, image, number = {cam_keys[0]: _gray(fr)}, fr.image, fr.number
+                for k, lv in lives.items():
+                    if k not in observed:  # the newest frame of every other webcam
+                        fr = lv.read(timeout=2.0)
+                        observed[k] = _gray(fr)
+                        if image is None:
+                            image = fr.image
             except TimeoutError:
-                if multi.link.error:
+                if multi is not None and multi.link.error:
                     print(f"link to the phone lost: {multi.link.error} - saving what was measured")
                     break
                 # The phone pauses its camera when warm: wait for it instead of giving up.
-                st = multi.link.status or {}
+                st = (multi.link.status if multi else None) or {}
                 wait = np.full((480, 960, 3), 40, np.uint8)
                 wait = _with_panel(wait, [f"no frames from the phone - camera: {st.get('camera', '?')}",
                                           f"thermal: {st.get('thermal', {})}",
@@ -1218,9 +1258,9 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
                 if key == ord("q"):
                     break
                 continue
-            last = group.number
+            last = number
             groups += 1
-            step = session.update(f"g{group.number}", group.observed)
+            step = session.update(f"g{number}", observed)
             for lens, why in fused.last_reasons.items():
                 missing[lens][re.sub(r"\d+(\.\d+)?", "#", why)] += 1  # numbers blanked so reasons group
             if step.state == "captured":
@@ -1233,7 +1273,7 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
                 message, message_until = f"capture {c.number}: error mm " + "  ".join(parts), time.perf_counter() + 3.0
                 print("  " + message)
                 _beep(1400, 70)
-            out = group.image if group.image is not None else np.full((height, width, 3), 60, np.uint8)
+            out = image if image is not None else np.full((height, width, 3), 60, np.uint8)
             if out.shape[1] != width:
                 out = cv2.resize(out, (width, height))
             det_ref, det_tgt = fused.last_detections
@@ -1259,7 +1299,8 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
                     line1 += "  | missing " + ", ".join(r.reasons)
             else:
                 line1 = f"this frame: {step.reason}"
-            line2 = f"captures {len(session.captures)}   lens groups complete {multi.complete}, partial {multi.partial}"
+            line2 = f"captures {len(session.captures)}" + (
+                f"   phone groups complete {multi.complete}, partial {multi.partial}" if multi else "")
             if session.captures:
                 cmp = compare(session.captures, truth, lenses, fused.weights)
                 line2 += "   capture RMS mm: " + "  ".join(f"{k} {v:.2f}" for k, v in cmp["rms"].items())
@@ -1280,7 +1321,10 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
     except Exception as e:  # noqa: BLE001 - keep what was measured
         print(f"error: {e!r} - saving what was measured")
     finally:
-        multi.stop()
+        if multi is not None:
+            multi.stop()
+        for lv in lives.values():
+            lv.stop()
         cv2.destroyAllWindows()
     if cancelled:
         print("cancelled, nothing saved")
@@ -1301,10 +1345,11 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
         return 1
     cmp = compare(session.captures, truth, lenses, fused.weights)
     print(f"\nMulti-lens measurement vs exact truth ({scene.known_mm():.2f} mm), {len(session.captures)} captures "
-          f"of {args.frames} frame groups; groups complete {multi.complete}, partial {multi.partial}")
-    names = {"fused": "fused (fx^2)", "equal": "equal weights"}
+          f"of {args.frames} frame groups, weighting '{args.weighting}'"
+          + (f"; phone groups complete {multi.complete}, partial {multi.partial}" if multi else ""))
+    names = {"fused": f"fused ({args.weighting})", "equal": "equal weights"}
     for lens in lenses:
-        names[lens] = f"lens {lens} ({multi.roles.get(lens)})"
+        names[lens] = labels[lens][:22]
     print(f"  {'':22} {'capture RMS':>11}   {'x':>5} {'y':>5} {'z':>5}   captures")
     for key in [*lenses, "equal", "fused"]:
         if key in cmp["rms"]:
@@ -1320,7 +1365,7 @@ def cmd_measure_multi(args: argparse.Namespace) -> int:
     print(f"  frame groups {groups}; per lens, frames with no result and why:")
     for lens in lenses:
         why = ", ".join(f"{k} {v}" for k, v in missing[lens].most_common(4)) or "-"
-        print(f"    lens {lens} ({multi.roles.get(lens)}): {sum(missing[lens].values())} of {groups}: {why}")
+        print(f"    {labels[lens]}: {sum(missing[lens].values())} of {groups}: {why}")
     print(f"\nwrote {csv_path}")
     return 0
 
@@ -1382,10 +1427,12 @@ def build_parser() -> argparse.ArgumentParser:
     ml.add_argument("--no-mirror", action="store_true")
     ml.set_defaults(func=cmd_measure_live)
 
-    mm = sub.add_parser("measure-multi", help="live measurement with several phone lenses at once, fused")
+    mm = sub.add_parser("measure-multi", help="live measurement with several cameras at once (phone lenses, webcams), fused")
     mm.add_argument("--calib", nargs="+", default=["output/phone_5.calib.json", "output/phone_6.calib.json",
                                                    "output/phone_2.calib.json"],
-                    help="one phone calibration per lens (the first one drives the window)")
+                    help="one calibration per camera: phone lenses and/or webcams (the first drives the window)")
+    mm.add_argument("--weighting", choices=["cov", "fx2", "equal"], default="cov",
+                    help="cov: each camera's 3D uncertainty from its board fits (default); fx2: focal length squared")
     mm.add_argument("--scene", default="output/scene_measure.json", help="scene from 'show --layout measure'")
     mm.add_argument("--frames", type=int, default=15, help="frame groups averaged per capture")
     mm.add_argument("--max-rms", type=float, default=1.0, help="reject a lens's frame whose board fit is worse (px)")

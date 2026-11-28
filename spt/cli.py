@@ -1,4 +1,4 @@
-﻿"""Command line: python -m spt {make-boards,calibrate,measure} ..."""
+"""Command line: python -m spt {make-boards,calibrate,measure} ..."""
 
 from __future__ import annotations
 
